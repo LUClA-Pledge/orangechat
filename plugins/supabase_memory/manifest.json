@@ -1,14 +1,11 @@
 {
   "id": "com.orangechat.plugin.supabase_memory",
   "name": "Supabase 外置记忆库",
-  "description": "基于 Supabase 的外置记忆库，支持聊天记录同步、自动阶段总结、每日日记生成，可选择向量化存储",
+  "description": "基于 Supabase 的外置记忆库，自动同步聊天记录",
   "version": "1.0.0",
   "author": "OrangeChat",
   "icon": "🗄️",
   "entry": "main.js",
-  "customPageWebView": {
-    "entry": "ui/index.html"
-  },
   "config": [
     {
       "name": "supabase_url",
@@ -25,64 +22,6 @@
       "description": "你的 Supabase anon/public API Key",
       "required": true,
       "placeholder": "eyJhbGciOiJIUzI1NiIs..."
-    },
-    {
-      "name": "summary_model",
-      "type": "model",
-      "label": "总结模型",
-      "description": "用于生成总结的模型，从已配置的供应商中选择",
-      "required": true
-    },
-    {
-      "name": "phase_summary_threshold",
-      "type": "integer",
-      "label": "阶段总结触发阈值",
-      "description": "每多少条消息触发一次阶段总结",
-      "required": false,
-      "default": 50,
-      "min": 10,
-      "max": 500
-    },
-    {
-      "name": "enable_daily_journal",
-      "type": "boolean",
-      "label": "启用每日日记",
-      "description": "每天凌晨3点自动生成日记",
-      "required": false,
-      "default": true
-    },
-    {
-      "name": "enable_vectorization",
-      "type": "boolean",
-      "label": "启用向量化",
-      "description": "开启后会对总结和日记进行向量化存储（需要 Embedding 配置）",
-      "required": false,
-      "default": false
-    },
-    {
-      "name": "embedding_model",
-      "type": "model",
-      "label": "向量模型",
-      "description": "用于向量化的模型，从已配置的供应商中选择（需要支持 embeddings 的模型）",
-      "required": false
-    },
-    {
-      "name": "max_retry_count",
-      "type": "integer",
-      "label": "失败重试次数",
-      "description": "日记生成失败时的最大重试次数",
-      "required": false,
-      "default": 3,
-      "min": 1,
-      "max": 10
-    },
-    {
-      "name": "target_assistant_ids",
-      "type": "string",
-      "label": "目标助手ID",
-      "description": "只处理指定助手的消息，多个用逗号分隔。留空则对所有助手生效。可在助手的设置页面查看助手ID",
-      "required": false,
-      "placeholder": "留空对所有助手生效，或填写如：abc123,def456"
     }
   ],
   "hooks": [
@@ -93,46 +32,12 @@
     {
       "event": "message_received",
       "handler": "onMessageReceived"
-    },
-    {
-      "event": "daily_cron",
-      "schedule": "0 3 * * *",
-      "handler": "onDailyCron"
     }
   ],
   "tools": [
     {
-      "name": "memory_search",
-      "description": "搜索 Supabase 记忆库中的阶段总结和日记",
-      "parameters": [
-        {
-          "name": "query",
-          "type": "string",
-          "required": true,
-          "description": "搜索关键词"
-        },
-        {
-          "name": "type",
-          "type": "string",
-          "required": false,
-          "description": "过滤类型: summary(阶段总结), journal(日记), all(全部)"
-        },
-        {
-          "name": "limit",
-          "type": "integer",
-          "required": false,
-          "description": "返回条数限制，默认10"
-        }
-      ]
-    },
-    {
-      "name": "memory_get_stats",
-      "description": "获取记忆库统计信息：总消息数、总结数、日记数",
-      "parameters": []
-    },
-    {
-      "name": "memory_manual_summary",
-      "description": "手动触发阶段总结",
+      "name": "memory_recall_recent",
+      "description": "获取当前对话最近的30条聊天记录",
       "parameters": [
         {
           "name": "conversation_id",
@@ -143,14 +48,50 @@
       ]
     },
     {
-      "name": "memory_manual_journal",
-      "description": "手动生成日记（用于失败重试）",
+      "name": "memory_search",
+      "description": "按关键词搜索聊天记录",
       "parameters": [
         {
-          "name": "date",
+          "name": "query",
+          "type": "string",
+          "required": true,
+          "description": "搜索关键词"
+        },
+        {
+          "name": "conversation_id",
           "type": "string",
           "required": false,
-          "description": "日期 (YYYY-MM-DD)，默认为昨天"
+          "description": "指定对话ID搜索，留空搜索所有对话"
+        },
+        {
+          "name": "limit",
+          "type": "integer",
+          "required": false,
+          "description": "返回条数限制，默认20"
+        }
+      ]
+    },
+    {
+      "name": "memory_write",
+      "description": "主动写入记忆库，将自定义内容保存到 Supabase",
+      "parameters": [
+        {
+          "name": "content",
+          "type": "string",
+          "required": true,
+          "description": "要写入记忆库的内容"
+        },
+        {
+          "name": "assistant_id",
+          "type": "string",
+          "required": false,
+          "description": "助手ID（可选）"
+        },
+        {
+          "name": "conversation_id",
+          "type": "string",
+          "required": false,
+          "description": "对话ID（可选）"
         }
       ]
     }

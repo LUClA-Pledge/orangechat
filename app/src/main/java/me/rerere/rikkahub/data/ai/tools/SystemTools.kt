@@ -205,6 +205,7 @@ class SystemTools(private val context: Context, private val settings: Settings) 
     private val batteryTool by lazy { createBatteryTool(context) }
     private val musicTool by lazy { createMusicTool(context) }
     private val smsTool by lazy { createSmsTool(context) }
+
     // ==================== 获取工具列表 ====================
 
     fun getTools(enabledTools: Set<SystemToolOption>): List<Tool> {

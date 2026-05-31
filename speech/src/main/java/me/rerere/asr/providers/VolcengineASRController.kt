@@ -27,6 +27,7 @@ import me.rerere.asr.ASRState
 import me.rerere.asr.ASRStatus
 import me.rerere.asr.appendAmplitude
 import me.rerere.asr.calculateRmsAmplitude
+import me.rerere.asr.stripTrailingEmoji
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -216,7 +217,8 @@ class VolcengineASRController(
                     return
                 }
 
-                val text = json.optJSONObject("result")?.optString("text", "") ?: ""
+                val rawText = json.optJSONObject("result")?.optString("text", "") ?: ""
+                val text = rawText.stripTrailingEmoji()
                 if (text.isNotEmpty() && text != lastText) {
                     lastText = text
                     _state.update { it.copy(transcript = text, errorMessage = null) }

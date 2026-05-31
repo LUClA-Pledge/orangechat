@@ -75,6 +75,115 @@ class PluginSandbox(
 
             // 注入exports对象和同步fetch函数
             evaluate("""
+                // TextEncoder polyfill - UTF-8 encoding
+                function TextEncoder() {}
+                TextEncoder.prototype.encode = function(str) {
+                    str = str || '';
+                    var bytes = [];
+                    for (var i = 0; i < str.length; ) {
+                        var codePoint = str.codePointAt(i);
+                        if (codePoint < 0x80) {
+                            bytes.push(codePoint);
+                        } else if (codePoint < 0x800) {
+                            bytes.push(0xC0 | (codePoint >> 6));
+                            bytes.push(0x80 | (codePoint & 0x3F));
+                        } else if (codePoint < 0x10000) {
+                            bytes.push(0xE0 | (codePoint >> 12));
+                            bytes.push(0x80 | ((codePoint >> 6) & 0x3F));
+                            bytes.push(0x80 | (codePoint & 0x3F));
+                        } else {
+                            bytes.push(0xF0 | (codePoint >> 18));
+                            bytes.push(0x80 | ((codePoint >> 12) & 0x3F));
+                            bytes.push(0x80 | ((codePoint >> 6) & 0x3F));
+                            bytes.push(0x80 | (codePoint & 0x3F));
+                        }
+                        i += codePoint > 0xFFFF ? 2 : 1;
+                    }
+                    return new Uint8Array(bytes);
+                };
+                TextEncoder.prototype.encodeInto = function(str, dest) {
+                    var encoded = this.encode(str);
+                    for (var i = 0; i < encoded.length && i < dest.length; i++) {
+                        dest[i] = encoded[i];
+                    }
+                    return { read: str.length, written: encoded.length };
+                };
+                
+                // TextDecoder polyfill - UTF-8 decoding
+                function TextDecoder(encoding) {
+                    this.encoding = encoding || 'utf-8';
+                    this.fatal = false;
+                    this.ignoreBOM = false;
+                }
+                TextDecoder.prototype.decode = function(input) {
+                    if (!input) return '';
+                    var bytes;
+                    if (input instanceof Uint8Array) {
+                        bytes = input;
+                    } else if (input instanceof ArrayBuffer) {
+                        bytes = new Uint8Array(input);
+                    } else {
+                        return '';
+                    }
+                    var result = '';
+                    var i = 0;
+                    while (i < bytes.length) {
+                        var byte1 = bytes[i++];
+                        if (byte1 < 0x80) {
+                            result += String.fromCodePoint(byte1);
+                        } else if ((byte1 & 0xE0) === 0xC0) {
+                            var byte2 = bytes[i++];
+                            result += String.fromCodePoint(((byte1 & 0x1F) << 6) | (byte2 & 0x3F));
+                        } else if ((byte1 & 0xF0) === 0xE0) {
+                            var byte2 = bytes[i++];
+                            var byte3 = bytes[i++];
+                            result += String.fromCodePoint(((byte1 & 0x0F) << 12) | ((byte2 & 0x3F) << 6) | (byte3 & 0x3F));
+                        } else if ((byte1 & 0xF8) === 0xF0) {
+                            var byte2 = bytes[i++];
+                            var byte3 = bytes[i++];
+                            var byte4 = bytes[i++];
+                            result += String.fromCodePoint(((byte1 & 0x07) << 18) | ((byte2 & 0x3F) << 12) | ((byte3 & 0x3F) << 6) | (byte4 & 0x3F));
+                        }
+                    }
+                    return result;
+                };
+
+                // btoa polyfill - standard behavior: binary string → Base64
+                // Input must be a binary string (each char code 0-255)
+                var btoa = function(str) {
+                    var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+                    var result = '';
+                    for (var i = 0; i < str.length; i += 3) {
+                        var b1 = str.charCodeAt(i);
+                        var b2 = (i + 1 < str.length) ? str.charCodeAt(i + 1) : 0;
+                        var b3 = (i + 2 < str.length) ? str.charCodeAt(i + 2) : 0;
+                        result += chars[(b1 >> 2) & 0x3F];
+                        result += chars[((b1 << 4) | (b2 >> 4)) & 0x3F];
+                        result += (i + 1 < str.length) ? chars[((b2 << 2) | (b3 >> 6)) & 0x3F] : '=';
+                        result += (i + 2 < str.length) ? chars[b3 & 0x3F] : '=';
+                    }
+                    return result;
+                };
+                
+                // atob polyfill - standard behavior: Base64 → binary string
+                // Returns a binary string where each char code is 0-255 (one byte per char)
+                // To decode UTF-8 text: new TextDecoder().decode(new Uint8Array([...atob(s)].map(c => c.charCodeAt(0))))
+                var atob = function(str) {
+                    str = str.replace(/\s/g, '');
+                    var chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+                    var result = '';
+                    for (var i = 0; i < str.length; i += 4) {
+                        var c1 = chars.indexOf(str[i]);
+                        var c2 = chars.indexOf(str[i + 1]);
+                        var c3 = chars.indexOf(str[i + 2]);
+                        var c4 = chars.indexOf(str[i + 3]);
+                        result += String.fromCharCode((c1 << 2) | (c2 >> 4));
+                        if (c3 !== -1) result += String.fromCharCode(((c2 << 4) | (c3 >> 2)) & 0xFF);
+                        if (c4 !== -1) result += String.fromCharCode(((c3 << 6) | c4) & 0xFF);
+                    }
+                    return result;
+                };
+
                 var exports = {};
                 
                 // 同步fetch函数 - 由原生代码注入

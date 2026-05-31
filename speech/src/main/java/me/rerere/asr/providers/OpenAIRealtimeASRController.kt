@@ -28,6 +28,7 @@ import me.rerere.asr.ASRState
 import me.rerere.asr.ASRStatus
 import me.rerere.asr.appendAmplitude
 import me.rerere.asr.calculateRmsAmplitude
+import me.rerere.asr.stripTrailingEmoji
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -229,9 +230,10 @@ class OpenAIRealtimeASRController(
     }
 
     private fun publishTranscript() {
-        val transcript = (completedTranscripts + partialTranscripts.values)
+        val rawTranscript = (completedTranscripts + partialTranscripts.values)
             .filter { it.isNotBlank() }
             .joinToString(" ")
+        val transcript = rawTranscript.stripTrailingEmoji()
         _state.update { it.copy(transcript = transcript, errorMessage = null) }
         scope.launch {
             onTranscriptChange?.invoke(transcript)

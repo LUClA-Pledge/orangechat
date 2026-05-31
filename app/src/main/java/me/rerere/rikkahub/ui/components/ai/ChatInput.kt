@@ -144,6 +144,7 @@ fun ChatInput(
     onSendClick: () -> Unit,
     onLongSendClick: () -> Unit,
     onVoiceMessage: ((url: String, duration: Long, transcript: String) -> Unit)? = null,
+    autoStartVoice: Boolean = false,
 ) {
     val toaster = LocalToaster.current
     val assistant = settings.getCurrentAssistant()
@@ -194,6 +195,18 @@ fun ChatInput(
     PermissionManager(permissionState = asrPermission)
     var asrBaseText by remember { mutableStateOf("") }
     var voiceMessageMode by remember { mutableStateOf(false) }
+
+    // Auto-start voice recording when entering from voice call notification
+    LaunchedEffect(autoStartVoice) {
+        if (autoStartVoice && asrState.status == ASRStatus.Idle && asrState.isAvailable) {
+            if (asrPermission.allRequiredPermissionsGranted) {
+                voiceMessageMode = true
+                asr.start { }
+            } else {
+                asrPermission.requestPermissions()
+            }
+        }
+    }
 
     LaunchedEffect(asrState.status) {
         when (asrState.status) {

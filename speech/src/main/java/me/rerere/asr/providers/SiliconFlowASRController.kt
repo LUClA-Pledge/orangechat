@@ -27,6 +27,7 @@ import me.rerere.asr.ASRState
 import me.rerere.asr.ASRStatus
 import me.rerere.asr.appendAmplitude
 import me.rerere.asr.calculateRmsAmplitude
+import me.rerere.asr.stripTrailingEmoji
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
@@ -203,9 +204,10 @@ class SiliconFlowASRController(
                     return@withContext
                 }
 
-                val text = json.optString("data", "").trim().ifEmpty {
+                val rawText = json.optString("data", "").trim().ifEmpty {
                     json.optString("text", "").trim()
                 }
+                val text = rawText.stripTrailingEmoji()
 
                 if (text.isNotEmpty()) {
                     _state.update {

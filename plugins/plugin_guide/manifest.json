@@ -2,7 +2,7 @@
   "id": "com.orangechat.plugin.plugin_guide",
   "name": "插件开发指南",
   "description": "安装后 AI 将掌握完整的插件开发知识，可以帮你写插件代码、调试问题、生成完整插件项目",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "author": "OrangeChat",
   "icon": "📖",
   "entry": "main.js",
@@ -15,7 +15,7 @@
           "name": "topic",
           "type": "string",
           "required": true,
-          "description": "文档主题：quickstart(快速开始)、manifest(清单文件)、mainjs(JS编写)、sandbox(沙箱API)、declarative_ui(声明式UI)、ui_components(UI组件)、ui_actions(操作定义)、ui_queries(查询定义)、config(配置字段)、prompt(提示词模板)、full_spec(完整规范)"
+          "description": "文档主题：quickstart(快速开始)、manifest(清单文件)、mainjs(JS编写)、sandbox(沙箱API)、memory_bank(记忆库)、hooks(事件钩子)、declarative_ui(声明式UI)、ui_components(UI组件)、ui_actions(操作定义)、ui_queries(查询定义)、config(配置字段)、prompt(提示词模板)、full_spec(完整规范)"
         }
       ]
     }

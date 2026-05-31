@@ -226,18 +226,23 @@ class RouteActivity : ComponentActivity() {
         super.onNewIntent(intent)
         // Navigate to the chat screen if a conversation ID is provided
         intent.getStringExtra("conversationId")?.let { text ->
+            val autoStartVoice = intent.getBooleanExtra("autoStartVoice", false)
             navStack?.let { stack ->
                 // 检查是否已经在同一个对话页面
                 val existingIndex = stack.indexOfLast { 
                     it is Screen.Chat && it.id == text 
                 }
                 if (existingIndex >= 0) {
-                    // 已经在同一个对话，移动到栈顶（刷新）
-                    val existing = stack.removeAt(existingIndex)
-                    stack.add(existing)
+                    // 已经在同一个对话，移动到栈顶
+                    val existing = stack.removeAt(existingIndex) as Screen.Chat
+                    if (autoStartVoice) {
+                        stack.add(existing.copy(autoStartVoice = true))
+                    } else {
+                        stack.add(existing)
+                    }
                 } else {
                     // 添加新对话页面
-                    stack.add(Screen.Chat(text))
+                    stack.add(Screen.Chat(text, autoStartVoice = autoStartVoice))
                 }
             }
         }
@@ -334,7 +339,8 @@ class RouteActivity : ComponentActivity() {
                                     id = Uuid.parse(key.id),
                                     text = key.text,
                                     files = key.files.map { it.toUri() },
-                                    nodeId = key.nodeId?.let { Uuid.parse(it) }
+                                    nodeId = key.nodeId?.let { Uuid.parse(it) },
+                                    autoStartVoice = key.autoStartVoice,
                                 )
                             }
 
@@ -616,7 +622,8 @@ sealed interface Screen : NavKey {
         val id: String,
         val text: String? = null,
         val files: List<String> = emptyList(),
-        val nodeId: String? = null
+        val nodeId: String? = null,
+        val autoStartVoice: Boolean = false,
     ) : Screen
 
     @Serializable

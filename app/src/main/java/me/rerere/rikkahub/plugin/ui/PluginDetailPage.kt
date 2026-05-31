@@ -153,7 +153,7 @@ fun PluginDetailPage(
                         else -> "管理页面"
                     },
                     description = when (customPage) {
-                        "memory_bank" -> "查看、搜索和管理记忆库中的记忆数据，重建向量索引"
+                        "memory_bank" -> "查看、搜索和管理记忆库中的记忆数据"
                         else -> "打开插件专属管理页面"
                     },
                     onClick = { onNavigateToCustomPage(customPage) }
@@ -421,7 +421,7 @@ private fun SupabaseSetupInstructions() {
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(
-                text = "数据库初始化步骤",
+                text = "数据库初始化",
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onPrimaryContainer
             )
@@ -429,139 +429,33 @@ private fun SupabaseSetupInstructions() {
             Spacer(modifier = Modifier.height(8.dp))
             
             Text(
-                text = "首次使用需要在 Supabase 数据库中创建表。请按以下步骤操作：",
+                text = "首次使用需要在 Supabase 数据库中创建表。复制以下 SQL 到 Supabase Dashboard 的 SQL Editor 中执行：",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onPrimaryContainer
             )
             
             Spacer(modifier = Modifier.height(12.dp))
             
-            // 步骤 1
-            Text(
-                text = "步骤 1：创建 chat_messages 表",
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onPrimaryContainer
-            )
-            
-            Spacer(modifier = Modifier.height(4.dp))
-            
-            val sql1 = """create table chat_messages (
+            val sql = """create table chat_messages (
   id uuid default gen_random_uuid() primary key,
   assistant_id text not null,
   conversation_id text not null,
   role text not null,
   content text not null,
   created_at timestamp with time zone default now()
-);"""
+);
+
+create index idx_chat_messages_conversation on chat_messages(conversation_id);
+create index idx_chat_messages_created on chat_messages(created_at);"""
             
             CopyableCodeBlock(
-                code = sql1,
+                code = sql,
                 index = 0,
                 copiedIndex = copiedIndex,
                 onCopy = { idx, text ->
                     clipboardManager.setText(AnnotatedString(text))
                     copiedIndex = idx
                 }
-            )
-            
-            Spacer(modifier = Modifier.height(12.dp))
-            
-            // 步骤 2
-            Text(
-                text = "步骤 2：创建 memory_summaries 表",
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onPrimaryContainer
-            )
-            
-            Spacer(modifier = Modifier.height(4.dp))
-            
-            val sql2 = """create table memory_summaries (
-  id uuid default gen_random_uuid() primary key,
-  assistant_id text not null,
-  conversation_id text not null,
-  summary text not null,
-  message_count integer default 0,
-  period_start timestamp with time zone,
-  period_end timestamp with time zone,
-  vectorized boolean default false,
-  embedding vector(1536),
-  created_at timestamp with time zone default now()
-);"""
-            
-            CopyableCodeBlock(
-                code = sql2,
-                index = 1,
-                copiedIndex = copiedIndex,
-                onCopy = { idx, text ->
-                    clipboardManager.setText(AnnotatedString(text))
-                    copiedIndex = idx
-                }
-            )
-            
-            Spacer(modifier = Modifier.height(12.dp))
-            
-            // 步骤 3
-            Text(
-                text = "步骤 3：创建 daily_journals 表",
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onPrimaryContainer
-            )
-            
-            Spacer(modifier = Modifier.height(4.dp))
-            
-            val sql3 = """create table daily_journals (
-  id uuid default gen_random_uuid() primary key,
-  assistant_id text not null,
-  journal_date date not null,
-  content text not null,
-  vectorized boolean default false,
-  embedding vector(1536),
-  created_at timestamp with time zone default now()
-);"""
-            
-            CopyableCodeBlock(
-                code = sql3,
-                index = 2,
-                copiedIndex = copiedIndex,
-                onCopy = { idx, text ->
-                    clipboardManager.setText(AnnotatedString(text))
-                    copiedIndex = idx
-                }
-            )
-            
-            Spacer(modifier = Modifier.height(12.dp))
-            
-            // 步骤 4
-            Text(
-                text = "步骤 4：启用向量扩展（可选）",
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onPrimaryContainer
-            )
-            
-            Spacer(modifier = Modifier.height(4.dp))
-            
-            val sql4 = "create extension if not exists vector;"
-            
-            CopyableCodeBlock(
-                code = sql4,
-                index = 3,
-                copiedIndex = copiedIndex,
-                onCopy = { idx, text ->
-                    clipboardManager.setText(AnnotatedString(text))
-                    copiedIndex = idx
-                }
-            )
-            
-            Spacer(modifier = Modifier.height(8.dp))
-            
-            Text(
-                text = "提示：在 Supabase Dashboard 的 SQL Editor 中执行以上 SQL。",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
             )
         }
     }

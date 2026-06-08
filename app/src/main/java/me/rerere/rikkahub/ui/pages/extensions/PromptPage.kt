@@ -12,6 +12,10 @@ import me.rerere.hugeicons.stroke.Share03
 import me.rerere.hugeicons.stroke.Delete01
 import me.rerere.hugeicons.stroke.MagicWand01
 import me.rerere.hugeicons.stroke.Cancel01
+import android.content.Context
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -188,12 +192,24 @@ private fun ModeInjectionTab(
     }
     val importSuccessMsg = stringResource(R.string.export_import_success)
     val importFailedMsg = stringResource(R.string.export_import_failed)
-    val importer = rememberImporter(ModeInjectionSerializer) { result ->
-        result.onSuccess { imported ->
-            onUpdate(currentModeInjections + imported)
-            toaster.show(importSuccessMsg)
-        }.onFailure { error ->
-            toaster.show(importFailedMsg.format(error.message))
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val importScope = rememberCoroutineScope()
+
+    // 使用 importList 支持酒馆预设一条文件导入为多条 ModeInjection
+    val importLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        uri ?: return@rememberLauncherForActivityResult
+        importScope.launch {
+            ModeInjectionSerializer.importList(context, uri)
+                .onSuccess { importedList ->
+                    if (importedList.isNotEmpty()) {
+                        onUpdate(currentModeInjections + importedList)
+                        toaster.show(importSuccessMsg)
+                    }
+                }.onFailure { error ->
+                    toaster.show(importFailedMsg.format(error.message))
+                }
         }
     }
 
@@ -261,7 +277,9 @@ private fun ModeInjectionTab(
                 .align(Alignment.BottomCenter)
                 .offset(y = -ScreenOffset),
             leadingContent = {
-                IconButton(onClick = { importer.importFromFile() }) {
+                IconButton(onClick = {
+                    importLauncher.launch(arrayOf("*/*"))
+                }) {
                     Icon(HugeIcons.FileImport, null)
                 }
             },

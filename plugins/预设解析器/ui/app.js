@@ -1,0 +1,1 @@
+// app.js is no longer used - all logic is in index.html

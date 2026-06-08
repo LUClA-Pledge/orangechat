@@ -1,15 +1,26 @@
 package me.rerere.rikkahub.plugin.webview
 
 import android.annotation.SuppressLint
+import android.app.Activity
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import android.util.Base64
 import android.util.Log
+import android.view.Gravity
+import android.view.KeyEvent
+import android.view.WindowManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.webkit.ValueCallback
+import android.widget.FrameLayout
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -33,7 +44,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
@@ -79,12 +92,68 @@ fun PluginWebViewPage(
     var webView by remember { mutableStateOf<WebView?>(null) }
     var pendingImageCallback by remember { mutableStateOf<String?>(null) }
     var pendingFileCallback by remember { mutableStateOf<String?>(null) }
+    var pendingBinaryFileCallback by remember { mutableStateOf<String?>(null) }
+    var webViewFileChooserCallback by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
+
+    // State for saveFileAs (SAF CreateDocument)
+    var pendingSaveCallbackId by remember { mutableStateOf<String?>(null) }
+    var pendingSaveBase64Data by remember { mutableStateOf<String?>(null) }
 
     val plugins by pluginManager.plugins.collectAsStateWithLifecycle()
     val pluginInfo = plugins.find { it.manifest.id == pluginId }
 
     val dataStore = remember(pluginId) {
         PluginDataStore(context, pluginId)
+    }
+
+    // Overlay WebView reference for pomodoro lock screen
+    var overlayWebView by remember { mutableStateOf<WebView?>(null) }
+
+    // Launcher for overlay permission (SYSTEM_ALERT_WINDOW)
+    val overlayPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { _ ->
+        // Result is handled by checking Settings.canDrawOverlays when needed
+    }
+
+    // Launcher for POST_NOTIFICATIONS permission
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ ->
+        // Result is handled; proceed regardless
+    }
+
+    // Timer end broadcast receiver
+    val timerEndReceiver = remember {
+        object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context?, intent: Intent?) {
+                if (intent?.action == PomodoroTimerService.ACTION_TIMER_END) {
+                    webView?.post {
+                        webView?.evaluateJavascript(
+                            "if(typeof window.onTimerEnd === 'function') { window.onTimerEnd(); }",
+                            null
+                        )
+                    }
+                    overlayWebView?.post {
+                        overlayWebView?.evaluateJavascript(
+                            "if(typeof window.onTimerEnd === 'function') { window.onTimerEnd(); }",
+                            null
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // Register timer end receiver
+    DisposableEffect(Unit) {
+        LocalBroadcastManager.getInstance(context).registerReceiver(
+            timerEndReceiver,
+            IntentFilter(PomodoroTimerService.ACTION_TIMER_END)
+        )
+        onDispose {
+            LocalBroadcastManager.getInstance(context).unregisterReceiver(timerEndReceiver)
+        }
     }
 
     // 文件选择器 - 用于 Bridge.pickFile()
@@ -155,6 +224,101 @@ fun PluginWebViewPage(
         pendingImageCallback = null
     }
 
+    // Launcher for binary file picking (Bridge.pickBinaryFile)
+    val binaryFilePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        val callbackId = pendingBinaryFileCallback
+        if (callbackId != null) {
+            if (uri != null) {
+                try {
+                    val inputStream = context.contentResolver.openInputStream(uri)
+                    val bytes = inputStream?.readBytes()
+                    inputStream?.close()
+                    val base64 = if (bytes != null) Base64.encodeToString(bytes, Base64.NO_WRAP) else ""
+                    val fileName = uri.lastPathSegment ?: "unknown"
+                    val mimeType = context.contentResolver.getType(uri) ?: "application/octet-stream"
+                    val escapedName = fileName.replace("\\", "\\\\").replace("'", "\\'")
+                    webView?.post {
+                        webView?.evaluateJavascript(
+                            "window.__bridgeResult('$callbackId', {success:true,fileName:'$escapedName',mimeType:'$mimeType',base64:'$base64'});", null
+                        )
+                    }
+                } catch (e: Exception) {
+                    val errMsg = e.message?.replace("\\", "\\\\")?.replace("'", "\\'") ?: "Unknown error"
+                    webView?.post {
+                        webView?.evaluateJavascript(
+                            "window.__bridgeResult('$callbackId', {success:false,error:'$errMsg'});", null
+                        )
+                    }
+                }
+            } else {
+                webView?.post {
+                    webView?.evaluateJavascript(
+                        "window.__bridgeResult('$callbackId', {success:false,error:'User cancelled'});", null
+                    )
+                }
+            }
+            pendingBinaryFileCallback = null
+        }
+    }
+
+    // Launcher for saveFileAs (SAF CreateDocument - user picks save location)
+    val saveFileAsLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri: Uri? ->
+        val callbackId = pendingSaveCallbackId
+        val base64Data = pendingSaveBase64Data
+        if (callbackId != null) {
+            if (uri != null && base64Data != null) {
+                try {
+                    val bytes = Base64.decode(base64Data, Base64.DEFAULT)
+                    context.contentResolver.openOutputStream(uri)?.use { outputStream ->
+                        outputStream.write(bytes)
+                        outputStream.flush()
+                    }
+                    val fileName = uri.lastPathSegment ?: "saved_file"
+                    val escapedName = fileName.replace("\\", "\\\\").replace("'", "\\'")
+                    webView?.post {
+                        webView?.evaluateJavascript(
+                            "window.__bridgeResult('$callbackId', {success:true,fileName:'$escapedName'});", null
+                        )
+                    }
+                } catch (e: Exception) {
+                    val errMsg = e.message?.replace("\\", "\\\\")?.replace("'", "\\'") ?: "Unknown error"
+                    webView?.post {
+                        webView?.evaluateJavascript(
+                            "window.__bridgeResult('$callbackId', {success:false,error:'$errMsg'});", null
+                        )
+                    }
+                }
+            } else {
+                webView?.post {
+                    webView?.evaluateJavascript(
+                        "window.__bridgeResult('$callbackId', {success:false,error:'User cancelled'});", null
+                    )
+                }
+            }
+            pendingSaveCallbackId = null
+            pendingSaveBase64Data = null
+        }
+    }
+
+    // Launcher for native HTML <input type="file"> file chooser
+    val htmlFileChooserLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        val callback = webViewFileChooserCallback
+        if (callback != null) {
+            if (uri != null) {
+                callback.onReceiveValue(arrayOf(uri))
+            } else {
+                callback.onReceiveValue(null)
+            }
+            webViewFileChooserCallback = null
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -208,8 +372,276 @@ fun PluginWebViewPage(
                                     pendingFileCallback = callbackId
                                     filePickerLauncher.launch(arrayOf("text/plain", "text/markdown", "application/octet-stream"))
                                 },
-                                onClose = onNavigateBack
+                                onPickBinaryFile = { callbackId ->
+                                    pendingBinaryFileCallback = callbackId
+                                    binaryFilePickerLauncher.launch(arrayOf("*/*"))
+                                },
+                                onSaveFileAs = { callbackId, fileName, base64Data ->
+                                    pendingSaveCallbackId = callbackId
+                                    pendingSaveBase64Data = base64Data
+                                    saveFileAsLauncher.launch(fileName)
+                                },
+                                onClose = onNavigateBack,
+                                onStartTimer = { wv, seconds ->
+                                    // Check overlay permission
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
+                                        val intent = Intent(
+                                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                            Uri.parse("package:${context.packageName}")
+                                        )
+                                        overlayPermissionLauncher.launch(intent)
+                                        wv.post {
+                                            wv.evaluateJavascript(
+                                                "window.__bridgeResult('${null}', {success:false,error:'Overlay permission required. Please grant it in settings and try again.'});", null
+                                            )
+                                        }
+                                        return@PluginWebViewClient
+                                    }
+                                    // Check notification permission
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                        if (ContextCompat.checkSelfPermission(context, android.Manifest.permission.POST_NOTIFICATIONS)
+                                            != android.content.pm.PackageManager.PERMISSION_GRANTED
+                                        ) {
+                                            notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+                                        }
+                                    }
+                                    PomodoroTimerService.start(context, seconds)
+                                    wv.post {
+                                        // Find the callbackId from the pending bridge call
+                                        // We use a simplified approach - the callback is handled in handleBridgeCall
+                                    }
+                                },
+                                onStopTimer = {
+                                    PomodoroTimerService.stop(context)
+                                },
+                                onShowOverlay = { wv, html ->
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
+                                        wv.post {
+                                            wv.evaluateJavascript(
+                                                "window.__bridgeResult('${null}', {success:false,error:'Overlay permission not granted'});", null
+                                            )
+                                        }
+                                        return@PluginWebViewClient
+                                    }
+
+                                    val activity = context as? Activity
+                                    val windowManager = activity?.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+                                    if (windowManager == null) {
+                                        wv.post {
+                                            wv.evaluateJavascript(
+                                                "window.__bridgeResult('${null}', {success:false,error:'Cannot access WindowManager'});", null
+                                            )
+                                        }
+                                        return@PluginWebViewClient
+                                    }
+
+                                    // Remove existing overlay if any
+                                    overlayWebView?.let { existingOverlay ->
+                                        try {
+                                            windowManager.removeView(existingOverlay)
+                                        } catch (e: Exception) {
+                                            Log.w(TAG, "Error removing existing overlay", e)
+                                        }
+                                        existingOverlay.destroy()
+                                    }
+
+                                    val overlayWv = WebView(context).apply {
+                                        settings.javaScriptEnabled = true
+                                        settings.domStorageEnabled = true
+                                        isFocusable = true
+                                        isFocusableInTouchMode = true
+                                    }
+                                    overlayWv.requestFocus()
+
+                                    // Inject bridge JS for overlay
+                                    overlayWv.webViewClient = object : WebViewClient() {
+                                        override fun onPageFinished(view: WebView?, url: String?) {
+                                            super.onPageFinished(view, url)
+                                            view?.evaluateJavascript(overlayBridgeJavascript, null)
+                                            // Auto-focus input/textarea on click so keyboard appears
+                                            view?.evaluateJavascript(
+                                                "document.addEventListener('click', function(e){ if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA'){ e.target.focus(); } });",
+                                                null
+                                            )
+                                        }
+
+                                        override fun shouldOverrideUrlLoading(
+                                            view: WebView?,
+                                            request: WebResourceRequest?
+                                        ): Boolean {
+                                            val url = request?.url?.toString() ?: return false
+                                            if (url.startsWith("bridge://")) {
+                                                val uri = Uri.parse(url)
+                                                val method = uri.host ?: return false
+                                                val params = uri.queryParameterNames.associateWith {
+                                                    uri.getQueryParameter(it) ?: ""
+                                                }
+                                                when (method) {
+                                                    "hideOverlay" -> {
+                                                        try {
+                                                            windowManager.removeView(overlayWv)
+                                                        } catch (e: Exception) {
+                                                            Log.w(TAG, "Error removing overlay", e)
+                                                        }
+                                                        overlayWv.destroy()
+                                                        overlayWebView = null
+                                                    }
+                                                    "getTimerState" -> {
+                                                        val running = PomodoroTimerService.isRunning()
+                                                        val remaining = PomodoroTimerService.getRemainingSeconds()
+                                                        val cbId = params["callbackId"] ?: ""
+                                                        overlayWv.post {
+                                                            overlayWv.evaluateJavascript(
+                                                                "window.__bridgeResult('$cbId', {running:$running,remaining:$remaining});", null
+                                                            )
+                                                        }
+                                                    }
+                                                    "getData" -> {
+                                                        val key = params["key"] ?: ""
+                                                        val value = dataStore.getData(key)
+                                                        val result = if (value != null) {
+                                                            "\"${value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r")}\""
+                                                        } else "null"
+                                                        val cbId = params["callbackId"] ?: ""
+                                                        overlayWv.post {
+                                                            overlayWv.evaluateJavascript(
+                                                                "window.__bridgeResult('$cbId', $result);", null
+                                                            )
+                                                        }
+                                                    }
+                                                    "setData" -> {
+                                                        val key = params["key"] ?: ""
+                                                        val value = params["value"] ?: ""
+                                                        dataStore.setData(key, value)
+                                                        val cbId = params["callbackId"] ?: ""
+                                                        overlayWv.post {
+                                                            overlayWv.evaluateJavascript(
+                                                                "window.__bridgeResult('$cbId', true);", null
+                                                            )
+                                                        }
+                                                    }
+                                                    "callAI" -> {
+                                                        val cbId = params["callbackId"] ?: ""
+                                                        val prompt = params["prompt"] ?: ""
+                                                        val contextJson = params["context"] ?: "{}"
+                                                        CoroutineScope(Dispatchers.IO).launch {
+                                                            try {
+                                                                // Use the PluginWebViewClient's callAI via a simple approach
+                                                                val settingsStore: SettingsStore = org.koin.java.KoinJavaComponent.get(SettingsStore::class.java)
+                                                                val providerManager: ProviderManager = org.koin.java.KoinJavaComponent.get(ProviderManager::class.java)
+                                                                val settings = settingsStore.settingsFlow.first()
+                                                                val model = settings.getCurrentChatModel()
+                                                                val aiResult = if (model == null) {
+                                                                    """{"success":false,"error":"No chat model configured"}"""
+                                                                } else {
+                                                                    val providerSetting = model.findProvider(settings.providers)
+                                                                    if (providerSetting == null) {
+                                                                        """{"success":false,"error":"Provider not found"}"""
+                                                                    } else {
+                                                                        val providerImpl = providerManager.getProviderByType(providerSetting)
+                                                                        val systemPrompt = "你是一个番茄钟陪伴助手。用户正在使用番茄钟专注。请用简短温暖的话回应，鼓励用户保持专注。当前上下文：$contextJson"
+                                                                        val messages = listOf(
+                                                                            UIMessage(role = MessageRole.SYSTEM, parts = listOf(UIMessagePart.Text(systemPrompt))),
+                                                                            UIMessage(role = MessageRole.USER, parts = listOf(UIMessagePart.Text(prompt)))
+                                                                        )
+                                                                        val textGenParams = TextGenerationParams(model = model, tools = emptyList(), temperature = 0.7f)
+                                                                        val response = providerImpl.generateText(providerSetting, messages, textGenParams)
+                                                                        val responseText = response.choices.firstOrNull()?.message?.parts
+                                                                            ?.filterIsInstance<UIMessagePart.Text>()
+                                                                            ?.firstOrNull()?.text ?: ""
+                                                                        val escaped = responseText.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+                                                                        """{"success":true,"text":"$escaped"}"""
+                                                                    }
+                                                                }
+                                                                overlayWv.post {
+                                                                    overlayWv.evaluateJavascript("window.__bridgeResult('$cbId', $aiResult);", null)
+                                                                }
+                                                            } catch (e: Exception) {
+                                                                val err = """{"success":false,"error":"${e.message?.replace("\"", "\\\"")?.replace("\\", "\\\\")}"}"""
+                                                                overlayWv.post {
+                                                                    overlayWv.evaluateJavascript("window.__bridgeResult('$cbId', $err);", null)
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                return true
+                                            }
+                                            return false
+                                        }
+                                    }
+
+                                    // Block back key
+                                    overlayWv.setOnKeyListener { _, keyCode, event ->
+                                        keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP
+                                    }
+
+                                    val params = WindowManager.LayoutParams(
+                                        WindowManager.LayoutParams.MATCH_PARENT,
+                                        WindowManager.LayoutParams.MATCH_PARENT,
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                                            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                                        else
+                                            @Suppress("DEPRECATION")
+                                            WindowManager.LayoutParams.TYPE_PHONE,
+                                        WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                                                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                                        android.graphics.PixelFormat.TRANSLUCENT
+                                    )
+                                    params.gravity = Gravity.CENTER
+                                    params.softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+
+                                    // Load HTML content
+                                    overlayWv.loadDataWithBaseURL(
+                                        "https://rikkahub.local",
+                                        html,
+                                        "text/html",
+                                        "UTF-8",
+                                        null
+                                    )
+
+                                    windowManager.addView(overlayWv, params)
+                                    overlayWebView = overlayWv
+                                },
+                                onHideOverlay = {
+                                    val activity = context as? Activity
+                                    val windowManager = activity?.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+                                    overlayWebView?.let { existingOverlay ->
+                                        try {
+                                            windowManager?.removeView(existingOverlay)
+                                        } catch (e: Exception) {
+                                            Log.w(TAG, "Error removing overlay", e)
+                                        }
+                                        existingOverlay.destroy()
+                                        overlayWebView = null
+                                    }
+                                }
                             )
+
+                            // 处理 HTML <input type="file"> 文件选择
+                            webChromeClient = object : WebChromeClient() {
+                                override fun onShowFileChooser(
+                                    webView: WebView?,
+                                    filePathCallback: ValueCallback<Array<Uri>>?,
+                                    fileChooserParams: FileChooserParams?
+                                ): Boolean {
+                                    // Cancel any previous callback
+                                    webViewFileChooserCallback?.onReceiveValue(null)
+                                    webViewFileChooserCallback = filePathCallback
+
+                                    val acceptTypes = fileChooserParams?.acceptTypes
+                                        ?.filter { it.isNotBlank() }
+                                        ?.toTypedArray()
+                                        ?: arrayOf("*/*")
+                                    // If no meaningful accept types, use */*
+                                    if (acceptTypes.isEmpty()) {
+                                        htmlFileChooserLauncher.launch(arrayOf("*/*"))
+                                    } else {
+                                        htmlFileChooserLauncher.launch(acceptTypes)
+                                    }
+                                    return true
+                                }
+                            }
 
                             // 禁用原生长按选择菜单 - 通过CSS/JS控制，不再用原生拦截
                             // （原生setOnLongClickListener会阻止批注模式的文字选择）
@@ -238,7 +670,20 @@ fun PluginWebViewPage(
 
     DisposableEffect(Unit) {
         onDispose {
+            // Clean up main WebView
             webView?.destroy()
+            // Clean up overlay WebView
+            overlayWebView?.let { overlay ->
+                try {
+                    val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+                    windowManager?.removeView(overlay)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error removing overlay on dispose", e)
+                }
+                overlay.destroy()
+            }
+            // Stop timer service
+            PomodoroTimerService.stop(context)
         }
     }
 }
@@ -251,7 +696,13 @@ private class PluginWebViewClient(
     private val pluginRepository: PluginRepository,
     private val onPickImage: (callbackId: String) -> Unit,
     private val onPickFile: (callbackId: String) -> Unit,
-    private val onClose: () -> Unit
+    private val onPickBinaryFile: (callbackId: String) -> Unit,
+    private val onSaveFileAs: (callbackId: String, fileName: String, base64Data: String) -> Unit,
+    private val onClose: () -> Unit,
+    private val onStartTimer: (webView: WebView, seconds: Int) -> Unit,
+    private val onStopTimer: () -> Unit,
+    private val onShowOverlay: (webView: WebView, html: String) -> Unit,
+    private val onHideOverlay: () -> Unit
 ) : WebViewClient() {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -264,7 +715,17 @@ private class PluginWebViewClient(
             handleBridgeCall(view!!, url)
             return true
         }
-        return !url.startsWith("file://") && !url.startsWith("about:blank")
+        if (!url.startsWith("file://") && !url.startsWith("about:blank")) {
+            // Open external URLs (e.g. Supabase download links) in system browser
+            try {
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                view?.context?.startActivity(intent)
+            } catch (e: Exception) {
+                Log.w(TAG, "Cannot open external URL: $url", e)
+            }
+            return true
+        }
+        return false
     }
 
     override fun onPageFinished(view: WebView?, url: String?) {
@@ -369,6 +830,11 @@ private class PluginWebViewClient(
             "pickFile" -> {
                 val callbackId = params["callbackId"] ?: ""
                 onPickFile(callbackId)
+            }
+
+            "pickBinaryFile" -> {
+                val callbackId = params["callbackId"] ?: ""
+                onPickBinaryFile(callbackId)
             }
 
             "writeFile" -> {
@@ -542,6 +1008,66 @@ private class PluginWebViewClient(
                             )
                         }
                     }
+                }
+            }
+
+            "startTimer" -> {
+                val callbackId = params["callbackId"] ?: ""
+                val seconds = params["seconds"]?.toIntOrNull() ?: (25 * 60)
+                onStartTimer(webView, seconds)
+                webView.post {
+                    webView.evaluateJavascript(
+                        "window.__bridgeResult('$callbackId', {success:true});", null
+                    )
+                }
+            }
+
+            "stopTimer" -> {
+                val callbackId = params["callbackId"] ?: ""
+                onStopTimer()
+                webView.post {
+                    webView.evaluateJavascript(
+                        "window.__bridgeResult('$callbackId', {success:true});", null
+                    )
+                }
+            }
+
+            "getTimerState" -> {
+                val callbackId = params["callbackId"] ?: ""
+                val running = PomodoroTimerService.isRunning()
+                val remaining = PomodoroTimerService.getRemainingSeconds()
+                webView.post {
+                    webView.evaluateJavascript(
+                        "window.__bridgeResult('$callbackId', {running:$running,remaining:$remaining});", null
+                    )
+                }
+            }
+
+            "showOverlay" -> {
+                val callbackId = params["callbackId"] ?: ""
+                val html = params["html"] ?: ""
+                onShowOverlay(webView, html)
+                webView.post {
+                    webView.evaluateJavascript(
+                        "window.__bridgeResult('$callbackId', {success:true});", null
+                    )
+                }
+            }
+
+            "saveFileAs" -> {
+                val callbackId = params["callbackId"] ?: ""
+                val fileName = params["fileName"] ?: "untitled.json"
+                val base64Data = params["data"] ?: ""
+                onSaveFileAs(callbackId, fileName, base64Data)
+            }
+
+            "hideOverlay" -> {
+                val callbackId = params["callbackId"] ?: ""
+                onHideOverlay()
+                webView.post {
+                    webView.evaluateJavascript(
+                        "window.__bridgeResult('$callbackId', {success:true});", null
+                    )
                 }
             }
         }
@@ -766,11 +1292,17 @@ private const val bridgeJavascript = """
         pickFile: function() {
             return bridgeCall('pickFile', {});
         },
+        pickBinaryFile: function() {
+            return bridgeCall('pickBinaryFile', {});
+        },
         callTool: function(toolName, params) {
             return bridgeCall('callTool', {toolName: toolName, params: params || '{}'});
         },
         writeFile: function(fileName, base64Data) {
             return bridgeCall('writeFile', {fileName: fileName, data: base64Data});
+        },
+        saveFileAs: function(fileName, base64Data) {
+            return bridgeCall('saveFileAs', {fileName: fileName, data: base64Data});
         },
         readFile: function(fileName) {
             return bridgeCall('readFile', {fileName: fileName});
@@ -789,10 +1321,88 @@ private const val bridgeJavascript = """
         },
         notifyHook: function(hookName, context) {
             return bridgeCall('notifyHook', {hookName: hookName, context: context || '{}'});
+        },
+        startTimer: function(seconds) {
+            return bridgeCall('startTimer', {seconds: seconds});
+        },
+        stopTimer: function() {
+            return bridgeCall('stopTimer', {});
+        },
+        getTimerState: function() {
+            return bridgeCall('getTimerState', {});
+        },
+        showOverlay: function(html) {
+            return bridgeCall('showOverlay', {html: html});
+        },
+        hideOverlay: function() {
+            return bridgeCall('hideOverlay', {});
         }
     };
 
+    window.onTimerEnd = function() {};
+
     console.log('Bridge API initialized');
+})();
+"""
+
+private const val overlayBridgeJavascript = """
+(function() {
+    if (window.__overlayBridgeReady) return;
+    window.__overlayBridgeReady = true;
+
+    window.__bridgeCallbacks = {};
+    window.__bridgeResultId = 0;
+
+    window.__bridgeResult = function(callbackId, result) {
+        if (callbackId && window.__bridgeCallbacks[callbackId]) {
+            try {
+                window.__bridgeCallbacks[callbackId](result);
+            } catch(e) {
+                console.error('Bridge callback error:', e);
+            }
+            delete window.__bridgeCallbacks[callbackId];
+        }
+    };
+
+    function bridgeCall(method, params) {
+        return new Promise(function(resolve, reject) {
+            var callbackId = 'cb_' + (++window.__bridgeResultId);
+            window.__bridgeCallbacks[callbackId] = resolve;
+            var url = 'bridge://' + method + '?callbackId=' + encodeURIComponent(callbackId);
+            for (var key in params) {
+                if (params.hasOwnProperty(key)) {
+                    url += '&' + encodeURIComponent(key) + '=' + encodeURIComponent(String(params[key]));
+                }
+            }
+            var iframe = document.createElement('iframe');
+            iframe.style.display = 'none';
+            iframe.src = url;
+            document.body.appendChild(iframe);
+            setTimeout(function() { document.body.removeChild(iframe); }, 100);
+        });
+    }
+
+    window.Bridge = {
+        hideOverlay: function() {
+            return bridgeCall('hideOverlay', {});
+        },
+        getTimerState: function() {
+            return bridgeCall('getTimerState', {});
+        },
+        getData: function(key) {
+            return bridgeCall('getData', {key: key});
+        },
+        setData: function(key, value) {
+            return bridgeCall('setData', {key: key, value: value});
+        },
+        callAI: function(prompt, context) {
+            return bridgeCall('callAI', {prompt: prompt, context: context || '{}'});
+        }
+    };
+
+    window.onTimerEnd = function() {};
+
+    console.log('Overlay Bridge API initialized');
 })();
 """
 

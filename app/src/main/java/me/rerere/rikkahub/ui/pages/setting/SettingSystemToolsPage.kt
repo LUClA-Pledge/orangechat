@@ -487,16 +487,16 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                 }
             }
 
-            // 闹钟管理
+            // 设置闹钟
             item {
                 CardGroup(
-                    title = { Text("闹钟管理") },
+                    title = { Text("设置闹钟") },
                     modifier = Modifier.padding(horizontal = 8.dp)
                 ) {
                     item(
                         leadingContent = { Icon(imageVector = HugeIcons.Watch01, contentDescription = null) },
                         headlineContent = { Text("启用闹钟工具") },
-                        supportingContent = { Text("允许AI查看、设置和删除设备闹钟，需要设置精确闹钟权限") },
+                        supportingContent = { Text("允许AI通过系统时钟应用为您设置设备闹钟") },
                         trailingContent = {
                             Switch(
                                 checked = systemToolsSetting.alarmEnabled,
@@ -506,26 +506,8 @@ fun SettingSystemToolsPage(vm: SettingVM = koinViewModel()) {
                     )
                     if (systemToolsSetting.alarmEnabled) {
                         item(
-                            headlineContent = { Text("闹钟权限状态") },
-                            supportingContent = {
-                                val alarmManager = context.getSystemService(android.content.Context.ALARM_SERVICE) as android.app.AlarmManager
-                                val canScheduleExact = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) alarmManager.canScheduleExactAlarms() else true
-                                if (canScheduleExact) Text("✓ 已拥有精确闹钟权限") else Text("⚠ 需要在系统设置中授予精确闹钟权限")
-                            },
-                            trailingContent = {
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                    val alarmManager = context.getSystemService(android.content.Context.ALARM_SERVICE) as android.app.AlarmManager
-                                    if (!alarmManager.canScheduleExactAlarms()) {
-                                        FilledTonalButton(onClick = {
-                                            try { context.startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)) } catch (_: Exception) {}
-                                        }) { Text("去设置") }
-                                    }
-                                }
-                            }
-                        )
-                        item(
                             headlineContent = { Text("说明") },
-                            supportingContent = { Text("AI 可以查看所有闹钟、创建新闹钟、删除闹钟以及计算距下一个闹钟的时间。闹钟通过系统时钟应用设置。") }
+                            supportingContent = { Text("AI 可以创建新闹钟，并可设置小时、分钟和闹钟标签。闹钟通过系统时钟应用设置。") }
                         )
                     }
                 }

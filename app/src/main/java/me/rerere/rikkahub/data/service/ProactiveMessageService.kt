@@ -66,6 +66,7 @@ import me.rerere.rikkahub.RouteActivity
 import me.rerere.rikkahub.data.model.Conversation
 import me.rerere.rikkahub.data.model.toMessageNode
 import me.rerere.rikkahub.data.repository.ConversationRepository
+import me.rerere.rikkahub.service.ChatService
 import me.rerere.rikkahub.utils.sendNotification
 import java.time.Instant
 import kotlin.uuid.Uuid
@@ -350,6 +351,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
     private val mcpManager: McpManager by inject()
     private val pluginToolProvider: PluginToolProvider by inject()
     private val json: Json by inject()
+    private val chatService: ChatService by inject()
     private val proactiveMessageService = ProactiveMessageService()
 
     companion object {
@@ -587,7 +589,6 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
     ): Uuid {
         val assistantUuid = assistant.id
 
-        // 如果对话不存在，创建新对话
         if (existingConversation == null) {
             val newConversation = Conversation(
                 id = conversationId,
@@ -598,25 +599,10 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
             conversationRepository.insertConversation(newConversation)
         }
 
-        // 获取最新的对话状态
-        val currentConversation = conversationRepository.getConversationById(conversationId)
-            ?: Conversation(
-                id = conversationId,
-                assistantId = assistantUuid,
-                title = "",
-                messageNodes = emptyList()
-            )
+        // 通过 ChatService 写入，内存 Session 立即更新
+        chatService.addProactiveMessage(conversationId, aiMessage)
 
-        // 只保存AI回复到对话历史（不保存用户上下文，避免暴露隐私信息）
-        val updatedConversation = currentConversation.copy(
-            messageNodes = currentConversation.messageNodes + listOf(
-                aiMessage.toMessageNode()
-            ),
-            updateAt = java.time.Instant.now()
-        )
-        
-        conversationRepository.updateConversation(updatedConversation)
-        Log.d(TAG, "Saved proactive message to conversation $conversationId")
+        Log.d(TAG, "Saved proactive message via ChatService to conversation $conversationId")
         return conversationId
     }
 

@@ -379,6 +379,25 @@ class ChatService(
         session.setJob(job)
     }
 
+    // ---- 添加主动消息 ----
+
+    fun addProactiveMessage(conversationId: Uuid, aiMessage: UIMessage) {
+        launchWithConversationReference(conversationId) {
+            try {
+                val session = getOrCreateSession(conversationId)
+                val currentConversation = session.state.value
+                val updated = currentConversation.copy(
+                    messageNodes = currentConversation.messageNodes + aiMessage.toMessageNode(),
+                    updateAt = java.time.Instant.now()
+                )
+                updateConversation(conversationId, updated)
+                saveConversation(conversationId, updated)
+            } catch (e: Exception) {
+                Log.e(TAG, "addProactiveMessage failed, conversationId=$conversationId", e)
+            }
+        }
+    }
+
     private fun preprocessUserInputParts(parts: List<UIMessagePart>, assistant: Assistant): List<UIMessagePart> {
         return parts.map { part ->
             when (part) {

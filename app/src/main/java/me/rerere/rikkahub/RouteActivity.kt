@@ -35,6 +35,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -228,21 +229,23 @@ class RouteActivity : ComponentActivity() {
         intent.getStringExtra("conversationId")?.let { text ->
             val autoStartVoice = intent.getBooleanExtra("autoStartVoice", false)
             navStack?.let { stack ->
-                // 检查是否已经在同一个对话页面
-                val existingIndex = stack.indexOfLast { 
-                    it is Screen.Chat && it.id == text 
-                }
-                if (existingIndex >= 0) {
-                    // 已经在同一个对话，移动到栈顶
-                    val existing = stack.removeAt(existingIndex) as Screen.Chat
-                    if (autoStartVoice) {
-                        stack.add(existing.copy(autoStartVoice = true))
-                    } else {
-                        stack.add(existing)
+                Snapshot.withMutableSnapshot {
+                    // 检查是否已经在同一个对话页面
+                    val existingIndex = stack.indexOfLast {
+                        it is Screen.Chat && it.id == text
                     }
-                } else {
-                    // 添加新对话页面
-                    stack.add(Screen.Chat(text, autoStartVoice = autoStartVoice))
+                    if (existingIndex >= 0) {
+                        // 已经在同一个对话，移动到栈顶
+                        val existing = stack.removeAt(existingIndex) as Screen.Chat
+                        if (autoStartVoice) {
+                            stack.add(existing.copy(autoStartVoice = true))
+                        } else {
+                            stack.add(existing)
+                        }
+                    } else {
+                        // 添加新对话页面
+                        stack.add(Screen.Chat(text, autoStartVoice = autoStartVoice))
+                    }
                 }
             }
         }

@@ -24,11 +24,11 @@ import me.rerere.ai.provider.Model
 import me.rerere.ai.provider.ProviderManager
 import me.rerere.ai.provider.ProviderSetting
 import me.rerere.ai.provider.TextGenerationParams
-import me.rerere.ai.ui.MessageChunk
 import me.rerere.ai.ui.UIMessage
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.ai.ui.ToolApprovalState
 import me.rerere.ai.ui.canResumeToolExecution
+import me.rerere.ai.ui.handleMessageChunk
 import me.rerere.ai.ui.limitContext
 import me.rerere.rikkahub.data.ai.transformers.InputMessageTransformer
 import me.rerere.rikkahub.data.ai.transformers.OutputMessageTransformer
@@ -84,7 +84,7 @@ class ProactiveMessageService : KoinComponent {
         const val ACTION_PROACTIVE_MESSAGE = "me.rerere.rikkahub.PROACTIVE_MESSAGE"
         private const val REQUEST_CODE = 10001
 
-        private const val PREFS_NAME = "proactive_message_prefs"
+        internal const val PREFS_NAME = "proactive_message_prefs"
         private const val KEY_NEXT_TRIGGER_TIME = "next_trigger_time"
 
         fun scheduleNext(context: Context, setting: ProactiveMessageSetting) {
@@ -389,6 +389,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         startForeground(20001, notification)
 
         CoroutineScope(Dispatchers.IO).launch {
+            var conversationId: kotlin.uuid.Uuid? = null
             try {
                 val settings = settingsStore.settingsFlow.first()
                 val proactiveSetting = settings.proactiveMessageSetting
@@ -397,6 +398,19 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     stopSelf()
                     return@launch
                 }
+
+                // 去重判断：防止 AlarmManager 和 WorkManager 在同一窗口内重复触发
+                val prefs = getSharedPreferences(ProactiveMessageService.PREFS_NAME, Context.MODE_PRIVATE)
+                val lastTriggeredTime = prefs.getLong("last_triggered_time", 0L)
+                val minIntervalMs = proactiveSetting.minIntervalMinutes.coerceAtLeast(1) * 60 * 1000L
+                if (System.currentTimeMillis() - lastTriggeredTime < minIntervalMs) {
+                    Log.d(TAG, "Duplicate trigger within min interval, skipping")
+                    ProactiveMessageService.scheduleNext(this@ProactiveMessageTriggerService, proactiveSetting)
+                    stopSelf()
+                    return@launch
+                }
+                // 立即写入触发时间，防止并发重复
+                prefs.edit().putLong("last_triggered_time", System.currentTimeMillis()).apply()
 
                 // 获取助手
                 val assistant = settings.assistants.find { it.id.toString() == proactiveSetting.assistantId }
@@ -417,7 +431,8 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     conversationRepository.getConversationById(recentConversations.first().id)
                 } else null
 
-                val conversationId = conversation?.id ?: kotlin.uuid.Uuid.random()
+                conversationId = conversation?.id ?: kotlin.uuid.Uuid.random()
+                val conversationId = conversationId!!
 
                 // 构建上下文
                 val contextStr = proactiveMessageService.buildProactiveContext(
@@ -451,13 +466,22 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     settings = settings
                 ).first()
 
+                // Bug 2 修复：合并相邻 assistant 消息，避免相邻 assistant 导致 API 400 错误
+                val fixedHistoryMessages = historyMessages.fold(emptyList<UIMessage>()) { acc, msg ->
+                    if (acc.isNotEmpty() && acc.last().role == MessageRole.ASSISTANT && msg.role == MessageRole.ASSISTANT) {
+                        acc.dropLast(1) + acc.last().copy(parts = acc.last().parts + msg.parts)
+                    } else {
+                        acc + msg
+                    }
+                }
+
                 // 组合完整消息列表：System + History + User Context
                 val messages = buildList {
                     add(UIMessage(
                         role = MessageRole.SYSTEM,
                         parts = listOf(UIMessagePart.Text(systemPrompt))
                     ))
-                    addAll(historyMessages)
+                    addAll(fixedHistoryMessages)
                     add(processedUserMessage)
                 }
 
@@ -494,9 +518,16 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 )
 
                 Log.d(TAG, "Calling AI API for proactive message with ${historyMessages.size} history messages, ${tools.size} tools (reasoning=${assistant.reasoningLevel})...")
-                
+
+                // 把数据库里的完整对话同步到 session，防止流式更新时 conv 是空状态导致覆盖历史
+                chatService.addConversationReference(conversationId)
+                if (conversation != null) {
+                    chatService.updateConversationState(conversationId) { _ -> conversation }
+                }
+
                 // 执行生成，支持工具调用
                 val (finalMessages, hasToolCalls) = generateWithTools(
+                    conversationId = conversationId,
                     providerImpl = providerImpl,
                     providerSetting = providerSetting,
                     initialMessages = messages,
@@ -519,21 +550,29 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 Log.d(TAG, "Proactive message generated: '${replyText.take(100)}...' (${replyText.length} chars), hasToolCalls=$hasToolCalls")
 
                 if (replyText.isBlank() || replyText.contains("[PASS]")) {
-                    // AI 选择跳过，不发通知
+                    // AI 选择跳过，移除本次生成的 aiMessage node（基于 id 匹配，不误删历史）
                     Log.d(ProactiveMessageService.TAG, "AI chose to skip proactive message")
+                    val aiId = aiMessage.id
+                    chatService.updateConversationState(conversationId) { conv ->
+                        conv.copy(
+                            messageNodes = conv.messageNodes.filterNot { node ->
+                                node.messages.any { it.id == aiId }
+                            }
+                        )
+                    }
                 } else {
-                    // 保存消息到对话并弹窗通知（保存用户上下文 + AI回复）
-                    val updatedConversationId = saveProactiveMessage(
-                        settings, assistant, conversationId, conversation, 
-                        processedUserMessage, aiMessage
+                    // 有效回复：session 里已有 aiMessage（流式过程已追加），持久化并发通知
+                    saveProactiveMessage(
+                        settings, assistant, conversationId, conversation
                     )
-                    showProactiveNotification(updatedConversationId, assistant.name.ifBlank { "AI" }, replyText)
+                    showProactiveNotification(conversationId, assistant.name.ifBlank { "AI" }, replyText)
                 }
 
                 ProactiveMessageService.scheduleNext(this@ProactiveMessageTriggerService, proactiveSetting)
             } catch (e: Exception) {
                 Log.e(ProactiveMessageService.TAG, "Failed to trigger proactive message", e)
             } finally {
+                conversationId?.let { chatService.removeConversationReference(it) }
                 stopSelf()
             }
         }
@@ -583,12 +622,11 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
         settings: Settings,
         assistant: Assistant,
         conversationId: Uuid,
-        existingConversation: Conversation?,
-        userMessage: UIMessage,
-        aiMessage: UIMessage
+        existingConversation: Conversation?
     ): Uuid {
         val assistantUuid = assistant.id
 
+        // 确保对话存在于数据库（新建时 insert）
         if (existingConversation == null) {
             val newConversation = Conversation(
                 id = conversationId,
@@ -599,10 +637,10 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
             conversationRepository.insertConversation(newConversation)
         }
 
-        // 通过 ChatService 写入，内存 Session 立即更新
-        chatService.addProactiveMessage(conversationId, aiMessage)
+        // 流式过程中已实时追加 aiMessage 到 session，这里直接持久化当前 session 状态
+        chatService.saveConversation(conversationId, chatService.getConversationFlow(conversationId).value)
 
-        Log.d(TAG, "Saved proactive message via ChatService to conversation $conversationId")
+        Log.d(TAG, "Saved proactive message to conversation $conversationId")
         return conversationId
     }
 
@@ -688,10 +726,43 @@ addAll(localTools.getTools(assistant.localTools))
     }
 
     /**
+     * 基于 AI 消息 id 在对话里就地更新（保留 MessageNode.id，避免 Compose 重建/状态丢失）
+     * 或追加新 node。不使用 toMessageNode() 生成随机新 id，也不用 dropLast(1) 盲目删除。
+     */
+    private fun updateOrAppendAiMessage(
+        conversationId: Uuid,
+        aiMessage: UIMessage
+    ) {
+        chatService.updateConversationState(conversationId) { conv ->
+            val existingNodeIndex = conv.messageNodes.indexOfFirst { node ->
+                node.messages.any { it.id == aiMessage.id }
+            }
+            if (existingNodeIndex >= 0) {
+                // 已存在该 id 的 node：保留 node id，只更新其 messages
+                val oldNode = conv.messageNodes[existingNodeIndex]
+                val updatedNode = oldNode.copy(
+                    messages = oldNode.messages.map {
+                        if (it.id == aiMessage.id) aiMessage else it
+                    }
+                )
+                conv.copy(
+                    messageNodes = conv.messageNodes.toMutableList().apply {
+                        this[existingNodeIndex] = updatedNode
+                    }
+                )
+            } else {
+                // 本次生成的 node 还没有：追加（首次调用时才创建新 node）
+                conv.copy(messageNodes = conv.messageNodes + aiMessage.toMessageNode())
+            }
+        }
+    }
+
+    /**
      * 生成消息，支持工具调用
      * 返回最终消息列表和是否发生了工具调用
      */
     private suspend fun generateWithTools(
+        conversationId: Uuid,
         providerImpl: me.rerere.ai.provider.Provider<ProviderSetting>,
         providerSetting: ProviderSetting,
         initialMessages: List<UIMessage>,
@@ -703,19 +774,34 @@ addAll(localTools.getTools(assistant.localTools))
     ): Pair<List<UIMessage>, Boolean> {
         var messages = initialMessages.toMutableList()
         var hasToolCalls = false
-        
+
         for (step in 0 until MAX_TOOL_STEPS) {
             Log.d(TAG, "generateWithTools: step $step/${MAX_TOOL_STEPS}")
-            
-            // 调用 AI
-            val result = providerImpl.generateText(providerSetting, messages, params)
-            val aiMessage = result.choices.firstOrNull()?.message
-            
-            if (aiMessage == null) {
+
+            // 流式调用 AI（替代非流式 generateText，兼容 thinking 模型）
+            var streamMessages = messages.toList()
+            providerImpl.streamText(
+                providerSetting = providerSetting,
+                messages = messages,
+                params = params
+            ).collect { chunk ->
+                streamMessages = streamMessages.handleMessageChunk(chunk = chunk, model = model)
+
+                // 实时更新 session 状态，让打开的聊天界面能看到消息生成
+                val currentAiMessage = streamMessages.lastOrNull { it.role == MessageRole.ASSISTANT }
+                if (currentAiMessage != null) {
+                    // 用 id 匹配就地更新（保留 node id，避免思考链闪烁 / 覆盖上一条 assistant）
+                    updateOrAppendAiMessage(conversationId, currentAiMessage)
+                }
+            }
+
+            // 流式结束，更新 messages
+            messages = streamMessages.toMutableList()
+            val aiMessage = streamMessages.lastOrNull() ?: run {
                 Log.w(TAG, "No message in AI response")
                 break
             }
-            
+
             // 应用输出转换器
             val processedMessage = listOf(aiMessage).transforms(
                 transformers = outputTransformers,
@@ -724,10 +810,11 @@ addAll(localTools.getTools(assistant.localTools))
                 assistant = assistant,
                 settings = settings
             ).first()
-            
+            messages[messages.lastIndex] = processedMessage
+
             // 检查是否有工具调用
             val toolCalls = processedMessage.getTools().filter { !it.isExecuted }
-            
+
             if (toolCalls.isEmpty()) {
                 // 没有工具调用，生成完成
                 // 设置 Reasoning 的 finishedAt，否则UI会一直显示"思考中"
@@ -741,14 +828,16 @@ addAll(localTools.getTools(assistant.localTools))
                         }
                     }
                 )
-                messages.add(finalMessage)
+                messages[messages.lastIndex] = finalMessage
+                // 最终更新 session 状态（用 id 匹配就地更新）
+                updateOrAppendAiMessage(conversationId, finalMessage)
                 break
             }
-            
+
             // 有工具调用
             hasToolCalls = true
             Log.d(TAG, "Tool calls detected: ${toolCalls.size}")
-            
+
             // 执行工具（后台模式下自动执行，不需要用户审批）
             val executedTools = mutableListOf<UIMessagePart.Tool>()
             for (toolCall in toolCalls) {
@@ -760,7 +849,7 @@ addAll(localTools.getTools(assistant.localTools))
                     ))
                     continue
                 }
-                
+
                 // 检查是否需要审批
                 if (toolDef.needsApproval) {
                     // 后台模式下，需要审批的工具自动拒绝
@@ -777,14 +866,14 @@ addAll(localTools.getTools(assistant.localTools))
                         val result = toolDef.execute(args)
                         executedTools.add(toolCall.copy(output = result))
                     } catch (e: Exception) {
-                        Log.e(TAG, "Tool execution failed: ${toolCall.toolName}", e)
+                        Log.e(TAG, "Tool execution failed: ${toolCall.toolName}, args=${toolCall.input}", e)
                         executedTools.add(toolCall.copy(
                             output = listOf(UIMessagePart.Text("""{"error":"${e.message}"}"""))
                         ))
                     }
                 }
             }
-            
+
             // 更新消息中的工具状态
             val updatedParts = processedMessage.parts.map { part ->
                 if (part is UIMessagePart.Tool) {
@@ -794,46 +883,12 @@ addAll(localTools.getTools(assistant.localTools))
                 }
             }
             val updatedMessage = processedMessage.copy(parts = updatedParts)
-            messages.add(updatedMessage)
+            messages[messages.lastIndex] = updatedMessage
+            // 更新 session 状态（带工具结果的消息，用 id 匹配就地更新）
+            updateOrAppendAiMessage(conversationId, updatedMessage)
         }
-        
+
         return Pair(messages, hasToolCalls)
-    }
-
-    /**
-     * 从AI回复中提取完整消息和纯文本内容
-     * 返回完整UIMessage（包含思维链）和纯文本内容（用于通知显示）
-     */
-    private fun extractMessageAndText(chunk: MessageChunk): Pair<UIMessage, String> {
-        val message = chunk.choices.firstOrNull()?.message
-        if (message == null) {
-            Log.w(TAG, "No message in AI response chunk")
-            return Pair(
-                UIMessage(
-                    role = MessageRole.ASSISTANT,
-                    parts = emptyList()
-                ),
-                ""
-            )
-        }
-
-        // 提取纯文本内容（用于通知显示）
-        val textParts = message.parts.filterIsInstance<UIMessagePart.Text>()
-        val cleanText = textParts.joinToString("\n") { it.text }.trim()
-
-        // 对于非流式请求，需要手动设置 Reasoning 的 finishedAt，否则UI会一直显示"思考中"
-        val now = kotlin.time.Clock.System.now()
-        val updatedParts = message.parts.map { part ->
-            if (part is UIMessagePart.Reasoning && part.finishedAt == null) {
-                part.copy(finishedAt = now)
-            } else {
-                part
-            }
-        }
-        val updatedMessage = message.copy(parts = updatedParts)
-
-        Log.d(TAG, "Extracted message with ${updatedMessage.parts.size} parts, text: ${cleanText.length} chars")
-        return Pair(updatedMessage, cleanText)
     }
 
     override fun onBind(intent: Intent?): android.os.IBinder? = null

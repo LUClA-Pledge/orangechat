@@ -385,7 +385,9 @@ class ChatService(
         launchWithConversationReference(conversationId) {
             try {
                 val session = getOrCreateSession(conversationId)
-                val currentConversation = session.state.value
+                // 优先从数据库读取完整对话，避免 session 被 idle 清除后用空对话覆盖数据库已有数据
+                val currentConversation = conversationRepo.getConversationById(conversationId)
+                    ?: session.state.value
                 val updated = currentConversation.copy(
                     messageNodes = currentConversation.messageNodes + aiMessage.toMessageNode(),
                     updateAt = java.time.Instant.now()

@@ -69,6 +69,14 @@ interface CustomTtsState {
     fun fastForward(ms: Long = 5_000)
     fun setSpeed(speed: Float)
     fun cleanup()
+
+    /**
+     * 流式朗读: 追加一段文本到 TTS 队列, 不清空当前播放.
+     * 用于语音通话中"边生成边朗读"的场景.
+     *
+     * @param text 要追加朗读的文本片段
+     */
+    fun enqueueText(text: String)
 }
 
 private class CustomTtsStateImpl(
@@ -122,6 +130,13 @@ private class CustomTtsStateImpl(
 
     override fun setSpeed(speed: Float) {
         controller.setSpeed(speed)
+    }
+
+    override fun enqueueText(text: String) {
+        if (text.isBlank()) return
+        val processed = text.stripMarkdown()
+        if (processed.isBlank()) return
+        controller.speak(processed, flush = false)
     }
 
     override fun cleanup() {

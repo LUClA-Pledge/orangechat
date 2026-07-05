@@ -25,9 +25,9 @@ sealed class ASRProviderSetting {
         val language: String = "",
         val prompt: String = "",
         val sampleRate: Int = 24000,
-        val vadThreshold: Float = 0.5f,
-        val prefixPaddingMs: Int = 300,
-        val silenceDurationMs: Int = 500,
+        val vadThreshold: Float = 0.3f,
+        val prefixPaddingMs: Int = 200,
+        val silenceDurationMs: Int = 300,
     ) : ASRProviderSetting() {
         override fun copyProvider(
             id: Uuid,

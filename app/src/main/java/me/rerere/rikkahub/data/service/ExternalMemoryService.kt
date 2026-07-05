@@ -66,6 +66,7 @@ class ExternalMemoryService(
             val responseCode = connection.responseCode
             if (responseCode !in 200..299) {
                 val errorBody = connection.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
+                Log.e(TAG, "saveMessage HTTP $responseCode body=$errorBody")
                 throw Exception("Supabase API error ($responseCode): $errorBody")
             }
 
@@ -97,6 +98,7 @@ class ExternalMemoryService(
             val responseCode = connection.responseCode
             if (responseCode !in 200..299) {
                 val errorBody = connection.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
+                Log.e(TAG, "queryLatestMessages HTTP $responseCode body=$errorBody")
                 throw Exception("Supabase API error ($responseCode): $errorBody")
             }
 
@@ -131,6 +133,7 @@ class ExternalMemoryService(
             val responseCode = connection.responseCode
             if (responseCode !in 200..299) {
                 val errorBody = connection.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
+                Log.e(TAG, "searchMessages HTTP $responseCode body=$errorBody")
                 throw Exception("Supabase API error ($responseCode): $errorBody")
             }
 
@@ -141,6 +144,9 @@ class ExternalMemoryService(
 
     /**
      * 保存日记摘要（可选带 embedding 向量）
+     *
+     * 若表缺少 embedding 列导致失败，自动降级为不带 embedding 重试，
+     * 保证日记内容一定能写入表（向量检索能力需用户在 Supabase 补列后才有）。
      */
     suspend fun saveDiarySummary(
         assistantId: String,
@@ -148,43 +154,96 @@ class ExternalMemoryService(
         embedding: List<Float>? = null,
     ): Result<Unit> = withContext(Dispatchers.IO) {
         runCatching {
-            val url = config.supabaseUrl.trimEnd('/')
-            val endpoint = URL("$url/rest/v1/${config.summariesTableName}")
-
             val sdf = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.getDefault())
-            val jsonString = buildJsonObject {
-                put("assistant_id", JsonPrimitive(assistantId))
-                put("content", JsonPrimitive(content))
-                put("created_at", JsonPrimitive(sdf.format(java.util.Date())))
-                if (embedding != null) {
-                    put("embedding", JsonPrimitive(embedding.joinToString(",", "[", "]")))
+            val createdAt = sdf.format(java.util.Date())
+
+            // 首次尝试：若提供了 embedding，则带上 embedding 字段
+            val firstJson = buildSummaryJson(assistantId, content, createdAt, embedding)
+            try {
+                postSummaries(firstJson)
+                Log.i(
+                    TAG,
+                    "Saved diary summary to ${config.summariesTableName} for assistant $assistantId " +
+                        "(with embedding=${embedding != null})"
+                )
+            } catch (e: Exception) {
+                val msg = e.message.orEmpty()
+                // 表缺少 embedding 列（PostgREST PGRST204 / 列名错误）时，降级为不带 embedding 重试
+                val missingEmbeddingColumn = embedding != null &&
+                    (
+                        msg.contains("PGRST204", ignoreCase = true) ||
+                            msg.contains("Could not find the", ignoreCase = true) ||
+                            msg.contains("'embedding'", ignoreCase = true) ||
+                            msg.contains("embedding", ignoreCase = true)
+                        )
+                if (missingEmbeddingColumn) {
+                    Log.w(
+                        TAG,
+                        "Column 'embedding' not found in ${config.summariesTableName}, retrying without embedding",
+                        e
+                    )
+                    val fallbackJson = buildSummaryJson(assistantId, content, createdAt, null)
+                    postSummaries(fallbackJson)
+                    Log.i(
+                        TAG,
+                        "Saved diary summary to ${config.summariesTableName} for assistant $assistantId " +
+                            "(without embedding, fallback)"
+                    )
+                } else {
+                    throw e
                 }
-            }.toString()
-
-            val connection = (endpoint.openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                setRequestProperty("Content-Type", "application/json")
-                setRequestProperty("apikey", config.supabaseKey)
-                setRequestProperty("Authorization", "Bearer ${config.supabaseKey}")
-                setRequestProperty("Prefer", "return=minimal")
-                doOutput = true
-                connectTimeout = 15000
-                readTimeout = 15000
             }
-
-            connection.outputStream.bufferedWriter().use { writer ->
-                writer.write(jsonString)
-                writer.flush()
-            }
-
-            val responseCode = connection.responseCode
-            if (responseCode !in 200..299) {
-                val errorBody = connection.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
-                throw Exception("Supabase API error ($responseCode): $errorBody")
-            }
-
-            Log.d(TAG, "Saved diary summary to ${config.summariesTableName} for assistant $assistantId")
         }.map { }
+    }
+
+    /**
+     * 构建日记摘要的 JSON body
+     */
+    private fun buildSummaryJson(
+        assistantId: String,
+        content: String,
+        createdAt: String,
+        embedding: List<Float>?
+    ): String = buildJsonObject {
+        put("assistant_id", JsonPrimitive(assistantId))
+        put("content", JsonPrimitive(content))
+        put("created_at", JsonPrimitive(createdAt))
+        if (embedding != null) {
+            // pgvector 接受 "[1.0,2.0]" 字符串形式
+            put("embedding", JsonPrimitive(embedding.joinToString(",", "[", "]")))
+        }
+    }.toString()
+
+    /**
+     * 向 memory_summaries 表发送 POST 请求，失败抛出带详细错误体的异常
+     */
+    private fun postSummaries(jsonString: String) {
+        val url = config.supabaseUrl.trimEnd('/')
+        val endpoint = URL("$url/rest/v1/${config.summariesTableName}")
+
+        val connection = (endpoint.openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("apikey", config.supabaseKey)
+            setRequestProperty("Authorization", "Bearer ${config.supabaseKey}")
+            setRequestProperty("Prefer", "return=minimal")
+            doOutput = true
+            connectTimeout = 15000
+            readTimeout = 15000
+        }
+
+        connection.outputStream.bufferedWriter().use { writer ->
+            writer.write(jsonString)
+            writer.flush()
+        }
+
+        val responseCode = connection.responseCode
+        Log.d(TAG, "saveDiarySummary POST ${config.summariesTableName} responseCode=$responseCode")
+        if (responseCode !in 200..299) {
+            val errorBody = connection.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
+            Log.e(TAG, "saveDiarySummary HTTP $responseCode body=$errorBody")
+            throw Exception("Supabase API error ($responseCode): $errorBody")
+        }
     }
 
     /**
@@ -212,6 +271,7 @@ class ExternalMemoryService(
             val responseCode = connection.responseCode
             if (responseCode !in 200..299) {
                 val errorBody = connection.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
+                Log.e(TAG, "queryMessagesByDate HTTP $responseCode body=$errorBody")
                 throw Exception("Supabase API error ($responseCode): $errorBody")
             }
 
@@ -246,6 +306,7 @@ class ExternalMemoryService(
             val responseCode = connection.responseCode
             if (responseCode !in 200..299) {
                 val errorBody = connection.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
+                Log.e(TAG, "querySummariesByDate HTTP $responseCode body=$errorBody")
                 throw Exception("Supabase API error ($responseCode): $errorBody")
             }
 
@@ -278,6 +339,7 @@ class ExternalMemoryService(
             val responseCode = connection.responseCode
             if (responseCode !in 200..299) {
                 val errorBody = connection.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
+                Log.e(TAG, "queryLatestSummaries HTTP $responseCode body=$errorBody")
                 throw Exception("Supabase API error ($responseCode): $errorBody")
             }
 
@@ -309,6 +371,7 @@ class ExternalMemoryService(
             val responseCode = connection.responseCode
             if (responseCode !in 200..299) {
                 val errorBody = connection.errorStream?.bufferedReader()?.readText() ?: "Unknown error"
+                Log.e(TAG, "queryAllSummaries HTTP $responseCode body=$errorBody")
                 throw Exception("Supabase API error ($responseCode): $errorBody")
             }
 

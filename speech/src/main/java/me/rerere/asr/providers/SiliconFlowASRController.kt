@@ -14,6 +14,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -51,10 +52,12 @@ class SiliconFlowASRController(
     override val state: StateFlow<ASRState> = _state.asStateFlow()
 
     private var recorderJob: Job? = null
+    private var vadJob: Job? = null
     private var audioRecord: AudioRecord? = null
     private var onTranscriptChange: ((String) -> Unit)? = null
     private var audioBuffer: ByteArrayOutputStream? = null
     private var recordingStartTime: Long = 0L
+    private var amplitudesBuffer = mutableListOf<Float>()
 
     override fun start(onTranscriptChange: (String) -> Unit) {
         if (state.value.isRecording) return
@@ -69,6 +72,7 @@ class SiliconFlowASRController(
 
         this.onTranscriptChange = onTranscriptChange
         audioBuffer = ByteArrayOutputStream()
+        amplitudesBuffer = mutableListOf()
         recordingStartTime = System.currentTimeMillis()
         _state.update {
             ASRState(
@@ -78,9 +82,11 @@ class SiliconFlowASRController(
             )
         }
         startRecorder()
+        startLocalVad()
     }
 
     override fun stop() {
+        vadJob?.cancel()
         recorderJob?.cancel()
         val buffer = audioBuffer
         audioBuffer = null
@@ -277,6 +283,59 @@ class SiliconFlowASRController(
     private fun writeShortLE(out: ByteArrayOutputStream, value: Short) {
         out.write(value.toInt() and 0xFF)
         out.write((value.toInt() shr 8) and 0xFF)
+    }
+
+    /**
+     * 本地 VAD: 检测用户说完话后自动停止录音
+     * 优化: 检测到 500ms 静音就自动停止, 不需要手动点停止
+     */
+    private fun startLocalVad() {
+        vadJob?.cancel()
+        vadJob = scope.launch {
+            var lastAmplitudeTime = System.currentTimeMillis()
+            var speechDetected = false
+            val silenceThresholdMs = 500L // 500ms 静音就停止
+            val minSpeechDurationMs = 400L // 至少说 400ms 才有效
+            val maxRecordingDurationMs = 30_000L // 最多录 30 秒
+
+            while (isActive) {
+                delay(50)
+
+                // 检查最大录音时长
+                val recordingDuration = System.currentTimeMillis() - recordingStartTime
+                if (recordingDuration > maxRecordingDurationMs) {
+                    Log.d(TAG, "VAD: Max recording duration reached")
+                    stop()
+                    break
+                }
+
+                val amplitudes = _state.value.amplitudes
+                val recentAmplitude = if (amplitudes.isNotEmpty()) {
+                    amplitudes.takeLast(3).average().toFloat()
+                } else 0f
+
+                // 检测是否有语音活动
+                if (recentAmplitude > 0.03f) {
+                    lastAmplitudeTime = System.currentTimeMillis()
+                    if (!speechDetected) {
+                        speechDetected = true
+                        Log.d(TAG, "VAD: Speech detected")
+                    }
+                }
+
+                // 如果已经检测到语音, 且静音超过阈值, 就自动停止
+                if (speechDetected) {
+                    val silentFor = System.currentTimeMillis() - lastAmplitudeTime
+                    val speechDuration = lastAmplitudeTime - recordingStartTime
+
+                    if (silentFor >= silenceThresholdMs && speechDuration >= minSpeechDurationMs) {
+                        Log.d(TAG, "VAD: Auto-stop after ${silentFor}ms silence")
+                        stop()
+                        break
+                    }
+                }
+            }
+        }
     }
 
     private fun setError(message: String) {

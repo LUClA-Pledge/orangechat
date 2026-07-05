@@ -24,6 +24,7 @@ import me.rerere.rikkahub.ui.pages.extensions.workspace.WorkspaceVM
 import me.rerere.rikkahub.ui.pages.setting.SettingVM
 import me.rerere.rikkahub.ui.pages.share.handler.ShareHandlerVM
 import me.rerere.rikkahub.ui.pages.translator.TranslatorVM
+import me.rerere.rikkahub.ui.pages.voice.VoiceCallVM
 import org.koin.core.module.dsl.viewModel
 import org.koin.core.module.dsl.viewModelOf
 import org.koin.dsl.module
@@ -79,4 +80,11 @@ val viewModelModule = module {
     viewModelOf(::StatsVM)
     viewModelOf(::HealthVM)
     viewModelOf(::MemoryBankVM)
+    viewModel<VoiceCallVM> { params ->
+        VoiceCallVM(
+            conversationId = params.get(),
+            context = get(),
+            chatService = get(),
+        )
+    }
 }

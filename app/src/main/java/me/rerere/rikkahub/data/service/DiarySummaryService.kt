@@ -443,12 +443,16 @@ class DiarySummaryService {
                                         }
                                     }
 
-                                    service.saveDiarySummary(
+                                    val saveResult = service.saveDiarySummary(
                                         assistantId = assistantId,
                                         content = summaryText,
                                         embedding = embedding,
                                     )
-                                    Log.i(TAG, "Diary saved to external memory ${config.name} for $dateStr assistant=$assistantId")
+                                    if (saveResult.isSuccess) {
+                                        Log.i(TAG, "Diary saved to external memory ${config.name} for $dateStr assistant=$assistantId")
+                                    } else {
+                                        Log.w(TAG, "Failed to save diary to external memory ${config.name} for $dateStr assistant=$assistantId", saveResult.exceptionOrNull())
+                                    }
                                 }.onFailure {
                                     Log.w(TAG, "Failed to save diary to external memory ${config.name} for $dateStr assistant=$assistantId", it)
                                 }

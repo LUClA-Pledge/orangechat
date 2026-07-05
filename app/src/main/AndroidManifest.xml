@@ -219,6 +219,26 @@
         android:value="daily cron execution for plugin hooks" />
     </service>
 
+    <!-- Diary Summary Receiver (handles diary summary alarm and boot completed) -->
+    <receiver
+      android:name=".data.service.DiarySummaryReceiver"
+      android:exported="true">
+      <intent-filter>
+        <action android:name="me.rerere.rikkahub.DIARY_SUMMARY" />
+        <action android:name="android.intent.action.BOOT_COMPLETED" />
+      </intent-filter>
+    </receiver>
+
+    <!-- Diary Summary Trigger Service -->
+    <service
+      android:name=".data.service.DiarySummaryTriggerService"
+      android:exported="false"
+      android:foregroundServiceType="specialUse">
+      <property
+        android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+        android:value="diary summary generation" />
+    </service>
+
     <!-- Pomodoro Timer Service -->
     <service
       android:name=".plugin.webview.PomodoroTimerService"

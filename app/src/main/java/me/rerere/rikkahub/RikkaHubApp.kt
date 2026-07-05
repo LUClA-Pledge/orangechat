@@ -33,6 +33,7 @@ import me.rerere.rikkahub.data.files.FilesManager
 import me.rerere.rikkahub.data.datastore.SettingsStore
 import me.rerere.rikkahub.data.service.DailySummaryService
 import me.rerere.rikkahub.data.service.DeviceEventTrackingService
+import me.rerere.rikkahub.data.service.DiarySummaryService
 import me.rerere.rikkahub.data.service.ProactiveMessageService
 import me.rerere.rikkahub.data.service.SupabaseSyncService
 import me.rerere.rikkahub.service.WebServerService
@@ -109,6 +110,9 @@ class RikkaHubApp : Application() {
         // Reschedule daily_cron alarm if plugins need it
         rescheduleDailyCronIfEnabled()
 
+        // Reschedule diary summary alarm if enabled
+        rescheduleDiarySummaryIfEnabled()
+
         // Increment launch count
         incrementLaunchCount()
 
@@ -175,6 +179,12 @@ class RikkaHubApp : Application() {
 
     private fun rescheduleDailyCronIfEnabled() {
         DailySummaryService.rescheduleIfEnabled(this)
+    }
+
+    private fun rescheduleDiarySummaryIfEnabled() {
+        DiarySummaryService.rescheduleIfEnabled(this)
+        // 打开 App 时立即检查并补写过去7天漏掉的日记
+        DiarySummaryService.checkAndGenerateMissingDiaries(this)
     }
 
     private fun startWebServerIfEnabled() {

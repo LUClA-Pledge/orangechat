@@ -638,7 +638,7 @@ class ChatService(
                     if (settings.enableWebSearch) {
                         addAll(createSearchTools(settings))
                     }
-addAll(localTools.getTools(assistant.localTools))
+addAll(localTools.getTools(assistant.localTools, conversationId.toString()))
                     // System tools (location, notifications, calendar, alarm, camera)
                     val systemToolsOptions = settings.systemToolsSetting.getEnabledOptions()
                     if (systemToolsOptions.isNotEmpty()) {

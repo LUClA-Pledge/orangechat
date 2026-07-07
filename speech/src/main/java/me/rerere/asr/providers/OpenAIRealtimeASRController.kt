@@ -40,6 +40,9 @@ import java.util.concurrent.ConcurrentHashMap
 
 private const val TAG = "OpenAIRealtimeASR"
 private const val MAX_WEBSOCKET_QUEUE_BYTES = 100_000L
+// 意外断开时的自动重连参数 (修复 ASR 运行一段时间后冻结的 bug)
+private const val MAX_RECONNECT_ATTEMPTS = 5
+private const val RECONNECT_BASE_DELAY_MS = 1000L
 
 class OpenAIRealtimeASRController(
     private val context: Context,
@@ -58,6 +61,14 @@ class OpenAIRealtimeASRController(
     private val completedTranscripts = Collections.synchronizedList(mutableListOf<String>())
     private val partialTranscripts = ConcurrentHashMap<String, String>()
 
+    // 用户主动 stop() 时置 true, 用来区分"用户挂断"和"网络断开需要重连"
+    @Volatile
+    private var isStopping = false
+    // 连续重连失败次数 (成功连上后清零), 超过上限才彻底报错
+    @Volatile
+    private var reconnectAttempts = 0
+    private var reconnectJob: Job? = null
+
     override fun start(onTranscriptChange: (String) -> Unit) {
         if (state.value.isRecording) return
         if (ContextCompat.checkSelfPermission(
@@ -70,8 +81,18 @@ class OpenAIRealtimeASRController(
         }
 
         this.onTranscriptChange = onTranscriptChange
+        isStopping = false
+        reconnectAttempts = 0
+        reconnectJob?.cancel()
         completedTranscripts.clear()
         partialTranscripts.clear()
+        connect()
+    }
+
+    /**
+     * 建立 WebSocket 连接 (内部用, 可被 start() 和重连逻辑复用).
+     */
+    private fun connect() {
         _state.update {
             ASRState(
                 status = ASRStatus.Connecting,
@@ -87,6 +108,8 @@ class OpenAIRealtimeASRController(
         webSocket = httpClient.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 webSocket.send(provider.sessionUpdateEvent().toString())
+                // 连上了, 重置重连计数
+                reconnectAttempts = 0
                 _state.update { it.copy(status = ASRStatus.Listening, errorMessage = null) }
                 startRecorder(provider, webSocket)
             }
@@ -98,22 +121,53 @@ class OpenAIRealtimeASRController(
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.e(TAG, "Realtime ASR websocket failed", t)
                 releaseRecorder()
-                setError(t.message ?: "ASR websocket failed")
+                handleDisconnect(t.message ?: "ASR websocket failed")
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                Log.w(TAG, "Realtime ASR websocket closed: code=$code, reason=$reason")
                 releaseRecorder()
-                _state.update {
-                    it.copy(
-                        status = ASRStatus.Idle,
-                        errorMessage = null
-                    )
-                }
+                handleDisconnect("ASR 连接已断开")
             }
         })
     }
 
+    /**
+     * 处理意外断开: 用户没主动 stop 时自动重连, 否则正常进入 Idle.
+     * 这是修复"音波球不动/说话发不出去"卡死 bug 的核心 ——
+     * 原来 onClosed 会静默变成 Idle 且清空错误, 导致 VoiceCallService 毫无察觉、永不恢复.
+     */
+    private fun handleDisconnect(reason: String) {
+        if (isStopping) {
+            // 用户主动挂断, 正常结束
+            _state.update { it.copy(status = ASRStatus.Idle, errorMessage = null) }
+            return
+        }
+        // 意外断开: 尝试重连, 超过上限才彻底报错
+        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+            Log.e(TAG, "重连次数已达上限 ($MAX_RECONNECT_ATTEMPTS), 放弃重连")
+            setError("$reason (重连失败)")
+            return
+        }
+        reconnectAttempts++
+        val delayMs = RECONNECT_BASE_DELAY_MS * reconnectAttempts
+        Log.w(TAG, "ASR 意外断开, ${delayMs}ms 后第 $reconnectAttempts 次重连...")
+        _state.update {
+            it.copy(
+                status = ASRStatus.Connecting,
+                errorMessage = null
+            )
+        }
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
+            delay(delayMs)
+            if (!isStopping) connect()
+        }
+    }
+
     override fun stop() {
+        isStopping = true
+        reconnectJob?.cancel()
         recorderJob?.cancel()
         releaseRecorder()
         val socket = webSocket

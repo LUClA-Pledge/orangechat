@@ -34,7 +34,9 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -62,6 +64,8 @@ import kotlinx.serialization.Serializable
 import me.rerere.highlight.Highlighter
 import me.rerere.highlight.LocalHighlighter
 import me.rerere.rikkahub.data.datastore.SettingsStore
+import me.rerere.rikkahub.data.datastore.getAssistantById
+import me.rerere.rikkahub.data.repository.ConversationRepository
 import me.rerere.rikkahub.data.db.DatabaseMigrationTracker
 import me.rerere.rikkahub.data.db.MigrationState
 import me.rerere.rikkahub.data.event.AppEvent
@@ -127,7 +131,9 @@ import me.rerere.rikkahub.ui.components.ui.EmojiPickerPage
 import me.rerere.rikkahub.ui.pages.share.handler.ShareHandlerPage
 import me.rerere.rikkahub.ui.pages.stats.StatsPage
 import me.rerere.rikkahub.ui.pages.translator.TranslatorPage
-import me.rerere.rikkahub.ui.pages.voice.VoiceCallPage
+ import me.rerere.rikkahub.ui.pages.voice.IncomingCallPage
+ import me.rerere.rikkahub.ui.pages.voice.VoiceCallPage
+import me.rerere.rikkahub.service.VoiceCallService
 import me.rerere.rikkahub.ui.pages.webview.WebViewPage
 import me.rerere.rikkahub.ui.theme.LocalDarkMode
 import me.rerere.rikkahub.ui.theme.RikkahubTheme
@@ -292,15 +298,6 @@ class RouteActivity : ComponentActivity() {
         val tts = rememberCustomTtsState()
         val asr = rememberCustomAsrState()
         val eventBus = koinInject<AppEventBus>()
-        LaunchedEffect(tts) {
-            eventBus.events.collect { event ->
-                when (event) {
-                    is AppEvent.Speak -> tts.speak(event.text)
-                    is AppEvent.EmojiSelected -> { /* handled in UIAvatar */ }
-                    is AppEvent.McpOAuthCallback -> Unit // 由 McpManager 消费
-                }
-            }
-        }
         val migrationState by DatabaseMigrationTracker.state.collectAsStateWithLifecycle()
 
         val startScreen = Screen.Chat(
@@ -318,6 +315,27 @@ class RouteActivity : ComponentActivity() {
         SideEffect { this@RouteActivity.navStack = backStack }
 
         ShareHandler(backStack)
+
+        // 监听 App 事件: TTS 朗读 / AI 主动发起语音通话
+        LaunchedEffect(tts) {
+            eventBus.events.collect { event ->
+                when (event) {
+                    is AppEvent.Speak -> tts.speak(event.text)
+                    is AppEvent.EmojiSelected -> { /* handled in UIAvatar */ }
+                    is AppEvent.McpOAuthCallback -> Unit // 由 McpManager 消费
+                    is AppEvent.RequestVoiceCall -> {
+                        val convId = event.conversationId
+                        // 单通话守卫: 已有通话进行中就不重复弹
+                        if (VoiceCallService.activeConversationId.value != null) return@collect
+                        // 防止重复叠加来电页
+                        val alreadyIncoming = backStack.lastOrNull() is Screen.IncomingCall
+                        if (!alreadyIncoming) {
+                            backStack.add(Screen.IncomingCall(convId))
+                        }
+                    }
+                }
+            }
+        }
 
         SharedTransitionLayout {
             CompositionLocalProvider(
@@ -647,6 +665,42 @@ class RouteActivity : ComponentActivity() {
                                 )
                             }
 
+                            entry<Screen.IncomingCall> { key ->
+                                // 来电界面: 接听 -> 启动通话并跳转到通话页; 拒接 -> 返回
+                                // 通过 conversationId 查会话 -> assistantId -> 助手名
+                                val conversationRepo = koinInject<ConversationRepository>()
+                                var assistantName by remember {
+                                    mutableStateOf("")
+                                }
+                                LaunchedEffect(key.conversationId) {
+                                    assistantName = runCatching {
+                                        conversationRepo.getConversationById(Uuid.parse(key.conversationId))
+                                            ?.assistantId
+                                            ?.let { settings.getAssistantById(it)?.name }
+                                    }.getOrNull().orEmpty()
+                                }
+                                IncomingCallPage(
+                                    conversationId = key.conversationId,
+                                    assistantName = assistantName,
+                                    onStartCall = {
+                                        val convId = key.conversationId
+                                        // 先停掉聊天侧的 TTS, 避免音频焦点抢占导致 ASR 识别质量下降
+                                        // (AI 刚说完话触发主动来电时, 聊天页的 TTS 可能还在播放)
+                                        runCatching { tts.stop() }
+                                        if (VoiceCallService.activeConversationId.value == null) {
+                                            VoiceCallService.start(
+                                                this@RouteActivity,
+                                                convId
+                                            )
+                                        }
+                                        // 替换来电页为通话页
+                                        backStack.removeLastOrNull()
+                                        backStack.add(Screen.VoiceCall(convId))
+                                    },
+                                    onDecline = { backStack.removeLastOrNull() }
+                                )
+                            }
+
                         }
                     )
                     AnimatedVisibility(
@@ -858,4 +912,11 @@ sealed interface Screen : NavKey {
 
     @Serializable
     data class VoiceCall(val conversationId: String) : Screen
+
+    /**
+     * AI 主动发起语音通话时弹出的来电界面.
+     * conversationId 用于接听后跳转到对应会话的通话页.
+     */
+    @Serializable
+    data class IncomingCall(val conversationId: String) : Screen
 }

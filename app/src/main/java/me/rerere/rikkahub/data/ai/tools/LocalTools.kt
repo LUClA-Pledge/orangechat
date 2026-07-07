@@ -18,6 +18,7 @@ import me.rerere.ai.core.Tool
 import me.rerere.ai.ui.UIMessagePart
 import me.rerere.rikkahub.data.event.AppEvent
 import me.rerere.rikkahub.data.event.AppEventBus
+import me.rerere.rikkahub.service.VoiceCallService
 import me.rerere.rikkahub.utils.readClipboardText
 import me.rerere.rikkahub.utils.writeClipboardText
 import java.time.ZoneId
@@ -42,6 +43,14 @@ sealed class LocalToolOption {
     @Serializable
     @SerialName("tts")
     data object Tts : LocalToolOption()
+
+    /**
+     * AI 主动发起语音通话 (聊着聊着想打就打).
+     * 开启后 AI 可在合适时机调用 request_voice_call, 弹出来电界面邀请用户接听.
+     */
+    @Serializable
+    @SerialName("request_voice_call")
+    data object RequestVoiceCall : LocalToolOption()
 
     @Serializable
     @SerialName("ask_user")
@@ -317,7 +326,57 @@ class LocalTools(private val context: Context, private val eventBus: AppEventBus
         )
     }
 
-    fun getTools(options: List<LocalToolOption>): List<Tool> {
+    /**
+     * AI 主动发起语音通话工具.
+     * conversationId 在工具构建时闭包捕获 (execute 拿不到上下文),
+     * 由 ChatService 在组装工具列表时传入当前会话 id.
+     */
+    private fun createRequestVoiceCallTool(conversationId: String) = Tool(
+        name = "request_voice_call",
+        description = """
+            Proactively initiate a voice call to the user, like making a phone call.
+            The user will see an incoming-call screen and can choose to answer or decline.
+            Use this when a voice conversation would be more natural than text — for example
+            when the topic is emotional, complex, or the user seems to want real-time back-and-forth.
+            Do NOT overuse this; typically at most once per conversation unless the user asks.
+            The tool returns whether the call was successfully requested (does not indicate whether the user answered).
+        """.trimIndent().replace("\n", " "),
+        parameters = {
+            InputSchema.Obj(
+                properties = buildJsonObject {
+                    put("reason", buildJsonObject {
+                        put("type", "string")
+                        put(
+                            "description",
+                            "A short reason why a voice call is being initiated now (shown briefly to the user). Optional."
+                        )
+                    })
+                },
+                required = emptyList()
+            )
+        },
+        execute = {
+            // 单通话守卫: 已有通话进行中就不重复发起
+            val active = VoiceCallService.activeConversationId.value
+            if (active != null) {
+                val payload = buildJsonObject {
+                    put("success", false)
+                    put("reason", "a voice call is already in progress")
+                }
+                return@Tool listOf(UIMessagePart.Text(payload.toString()))
+            }
+            eventBus.emit(AppEvent.RequestVoiceCall(conversationId))
+            val payload = buildJsonObject {
+                put("success", true)
+            }
+            listOf(UIMessagePart.Text(payload.toString()))
+        }
+    )
+
+    fun getTools(
+        options: List<LocalToolOption>,
+        conversationId: String? = null,
+    ): List<Tool> {
         val tools = mutableListOf<Tool>()
         if (options.contains(LocalToolOption.JavascriptEngine)) {
             tools.add(javascriptTool)
@@ -330,6 +389,9 @@ class LocalTools(private val context: Context, private val eventBus: AppEventBus
         }
         if (options.contains(LocalToolOption.Tts)) {
             tools.add(ttsTool)
+        }
+        if (options.contains(LocalToolOption.RequestVoiceCall) && conversationId != null) {
+            tools.add(createRequestVoiceCallTool(conversationId))
         }
         if (options.contains(LocalToolOption.AskUser)) {
             tools.add(askUserTool)

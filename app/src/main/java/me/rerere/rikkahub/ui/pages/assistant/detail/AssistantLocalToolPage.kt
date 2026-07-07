@@ -146,6 +146,16 @@ private fun AssistantLocalToolContent(
                 }
             )
             item(
+                headlineContent = { Text("主动语音通话") },
+                supportingContent = { Text("允许 AI 在合适时机主动发起语音通话, 弹出来电界面邀请你接听。开启后 AI 可能会在觉得语音更合适时打来电话") },
+                trailingContent = {
+                    Switch(
+                        checked = assistant.localTools.contains(LocalToolOption.RequestVoiceCall),
+                        onCheckedChange = { toggleLocalTool(LocalToolOption.RequestVoiceCall, it) }
+                    )
+                }
+            )
+            item(
                 headlineContent = {
                     Text(stringResource(R.string.assistant_page_local_tools_ask_user_title))
                 },

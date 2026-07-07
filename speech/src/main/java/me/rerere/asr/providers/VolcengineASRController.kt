@@ -45,6 +45,9 @@ import kotlin.uuid.Uuid
 
 private const val TAG = "VolcengineASR"
 private const val MAX_WEBSOCKET_QUEUE_BYTES = 100_000L
+// 意外断开时的自动重连参数 (修复 ASR 运行一段时间后冻结的 bug)
+private const val MAX_RECONNECT_ATTEMPTS = 5
+private const val RECONNECT_BASE_DELAY_MS = 1000L
 
 class VolcengineASRController(
     private val context: Context,
@@ -62,6 +65,13 @@ class VolcengineASRController(
     private var onTranscriptChange: ((String) -> Unit)? = null
     private var lastText = ""
 
+    // 用户主动 stop() 时置 true, 用来区分"用户挂断"和"网络断开需要重连"
+    @Volatile
+    private var isStopping = false
+    @Volatile
+    private var reconnectAttempts = 0
+    private var reconnectJob: Job? = null
+
     override fun start(onTranscriptChange: (String) -> Unit) {
         if (state.value.isRecording) return
         if (ContextCompat.checkSelfPermission(
@@ -75,6 +85,13 @@ class VolcengineASRController(
 
         this.onTranscriptChange = onTranscriptChange
         lastText = ""
+        isStopping = false
+        reconnectAttempts = 0
+        reconnectJob?.cancel()
+        connect()
+    }
+
+    private fun connect() {
         _state.update {
             ASRState(
                 status = ASRStatus.Connecting,
@@ -102,6 +119,7 @@ class VolcengineASRController(
                     payload = compressed
                 )
                 webSocket.send(frame.toByteString())
+                reconnectAttempts = 0
                 _state.update { it.copy(status = ASRStatus.Listening, errorMessage = null) }
                 startRecorder(webSocket)
             }
@@ -113,17 +131,50 @@ class VolcengineASRController(
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 Log.e(TAG, "Volcengine ASR websocket failed", t)
                 releaseRecorder()
-                setError(t.message ?: "ASR websocket failed")
+                handleDisconnect(t.message ?: "ASR websocket failed")
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                Log.w(TAG, "Volcengine ASR websocket closed: code=$code, reason=$reason")
                 releaseRecorder()
-                _state.update { it.copy(status = ASRStatus.Idle, errorMessage = null) }
+                handleDisconnect("ASR 连接已断开")
             }
         })
     }
 
+    /**
+     * 处理意外断开: 用户没主动 stop 时自动重连, 否则正常进入 Idle.
+     * 修复 ASR 运行一段时间后冻结 (音波球不动/说话发不出去) 的 bug.
+     */
+    private fun handleDisconnect(reason: String) {
+        if (isStopping) {
+            _state.update { it.copy(status = ASRStatus.Idle, errorMessage = null) }
+            return
+        }
+        if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+            Log.e(TAG, "重连次数已达上限 ($MAX_RECONNECT_ATTEMPTS), 放弃重连")
+            setError("$reason (重连失败)")
+            return
+        }
+        reconnectAttempts++
+        val delayMs = RECONNECT_BASE_DELAY_MS * reconnectAttempts
+        Log.w(TAG, "ASR 意外断开, ${delayMs}ms 后第 $reconnectAttempts 次重连...")
+        _state.update {
+            it.copy(
+                status = ASRStatus.Connecting,
+                errorMessage = null
+            )
+        }
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
+            delay(delayMs)
+            if (!isStopping) connect()
+        }
+    }
+
     override fun stop() {
+        isStopping = true
+        reconnectJob?.cancel()
         recorderJob?.cancel()
         releaseRecorder()
         val socket = webSocket

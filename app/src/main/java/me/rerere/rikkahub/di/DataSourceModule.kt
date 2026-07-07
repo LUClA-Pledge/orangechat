@@ -190,6 +190,9 @@ val dataSourceModule = module {
             .connectTimeout(20, TimeUnit.SECONDS)
             .readTimeout(10, TimeUnit.MINUTES)
             .writeTimeout(120, TimeUnit.SECONDS)
+            // WebSocket 保活: 每 10s 发 PING 帧, 防止 ASR Realtime 连接被空闲断开
+            // (pingInterval 只对 WebSocket 生效, 不影响普通 HTTP 请求)
+            .pingInterval(10, TimeUnit.SECONDS)
             .followSslRedirects(true)
             .followRedirects(true)
             .retryOnConnectionFailure(true)

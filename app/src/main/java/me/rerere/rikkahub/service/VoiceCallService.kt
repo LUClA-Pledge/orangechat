@@ -310,6 +310,17 @@ class VoiceCallService : Service(), KoinComponent {
         // 停止"打断检测"协程 (Speaking 状态才需要它)
         interruptDetectJob?.cancel()
 
+        // 重启 ASR: 非流式 ASR (SiliconFlow) 是“录一段→停”的一次性模式,
+        // AI 说完话回到 Listening 时它已停, 不重启则音波球不动、说话发不出去.
+        // 流式 ASR 的 start() 有 isRecording 守卫, 重复调用无副作用.
+        if (!isMuted) {
+            runCatching {
+                asr.start { transcript ->
+                    _uiState.update { it.copy(userTranscript = transcript) }
+                }
+            }.onFailure { Log.e(TAG, it.toString(), it) }
+        }
+
         startVadDetection()
     }
 
@@ -497,9 +508,37 @@ class VoiceCallService : Service(), KoinComponent {
         while (!tts.isSpeaking.value && System.currentTimeMillis() - waitStart < 5000) {
             delay(100)
         }
-        // 等待 TTS 播放完成
-        while (tts.isSpeaking.value) {
-            delay(200)
+        // 等待 TTS 播放完成.
+        // 不能只靠 isSpeaking: 它在 worker 的 finally 里才会变 false,
+        // 一旦 worker 挂在网络请用/音频播放上 (isSpeaking 永远 true),
+        // 这里就死循环, 通话永远卡在 "正在传达".
+        // 改用 "活动超时": 跟踪 TTS 最后一次处于活动状态的时间,
+        // 连续 5 秒没有新的播放活动(不是 Playing/Buffering 且 isSpeaking 为 false)
+        // 就认为说完了. 另勠 5 分钟硬截止兜底.
+        val idleTimeoutMs = 5_000L
+        val hardDeadlineMs = 300_000L
+        val startTime = System.currentTimeMillis()
+        var lastActiveTime = System.currentTimeMillis()
+        while (true) {
+            val now = System.currentTimeMillis()
+            val status = tts.playbackState.value.status
+            val active = tts.isSpeaking.value ||
+                status == me.rerere.tts.model.PlaybackStatus.Playing ||
+                status == me.rerere.tts.model.PlaybackStatus.Buffering
+            if (active) {
+                lastActiveTime = now
+            }
+            // 连续 idleTimeoutMs 没活动 → 说完了
+            if (!active && now - lastActiveTime >= idleTimeoutMs) {
+                break
+            }
+            // 硬截止兜底 (TTS 真卡死)
+            if (now - startTime > hardDeadlineMs) {
+                Log.w(TAG, "TTS 播放超过 5 分钟未结束, 强制停止以防卡死")
+                tts.stop()
+                break
+            }
+            delay(300)
         }
         // 额外等待状态更新
         delay(300)
@@ -612,6 +651,15 @@ class VoiceCallService : Service(), KoinComponent {
                     if (transcript.isNotEmpty() && _uiState.value.autoSendEnabled) {
                         Log.d(TAG, "ASR monitor: Auto-send after ASR completed: $transcript")
                         sendCurrentMessage()
+                    } else {
+                        // 转写为空(没说话/未识别到): 非流式 ASR (SiliconFlow)
+                        // 此时已停在 Idle, 不重启的话音波球不动、下一句说话发不出去.
+                        // 流式 ASR 的 start() 有 isRecording 守卫, 重复调用无副作用.
+                        if (!isMuted && _uiState.value.status == VoiceCallStatus.Listening) {
+                            runCatching {
+                                asr.start { t -> _uiState.update { it.copy(userTranscript = t) } }
+                            }.onFailure { Log.e(TAG, it.toString(), it) }
+                        }
                     }
                 }
 

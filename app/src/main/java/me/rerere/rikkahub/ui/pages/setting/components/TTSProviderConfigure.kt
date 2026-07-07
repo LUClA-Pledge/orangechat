@@ -56,6 +56,7 @@ fun TTSProviderConfigure(
                         is TTSProviderSetting.Groq -> "Groq"
                         is TTSProviderSetting.XAI -> "xAI"
                         is TTSProviderSetting.MiMo -> "MiMo"
+                        is TTSProviderSetting.ElevenLabs -> "ElevenLabs"
                     },
                     onValueChange = {},
                     readOnly = true,
@@ -83,6 +84,7 @@ fun TTSProviderConfigure(
                                         TTSProviderSetting.Groq::class -> "Groq"
                                         TTSProviderSetting.XAI::class -> "xAI"
                                         TTSProviderSetting.MiMo::class -> "MiMo"
+                                        TTSProviderSetting.ElevenLabs::class -> "ElevenLabs"
                                         else -> providerClass.simpleName ?: "Unknown"
                                     }
                                 )
@@ -130,6 +132,11 @@ fun TTSProviderConfigure(
                                         name = "MiMo TTS"
                                     )
 
+                                    TTSProviderSetting.ElevenLabs::class -> TTSProviderSetting.ElevenLabs(
+                                        id = setting.id,
+                                        name = "ElevenLabs TTS"
+                                    )
+
                                     else -> setting
                                 }
                                 onValueChange(newSetting)
@@ -165,6 +172,7 @@ fun TTSProviderConfigure(
             is TTSProviderSetting.Groq -> GroqTTSConfiguration(setting, onValueChange)
             is TTSProviderSetting.XAI -> XAITTSConfiguration(setting, onValueChange)
             is TTSProviderSetting.MiMo -> MiMoTTSConfiguration(setting, onValueChange)
+            is TTSProviderSetting.ElevenLabs -> ElevenLabsTTSConfiguration(setting, onValueChange)
         }
     }
 }
@@ -967,5 +975,125 @@ private fun XAITTSConfiguration(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ElevenLabsTTSConfiguration(
+    setting: TTSProviderSetting.ElevenLabs,
+    onValueChange: (TTSProviderSetting) -> Unit
+) {
+    FormItem(
+        label = { Text(stringResource(R.string.setting_tts_page_api_key)) },
+        description = { Text(stringResource(R.string.setting_tts_page_api_key_description)) }
+    ) {
+        OutlinedTextField(
+            value = setting.apiKey,
+            onValueChange = { newApiKey ->
+                onValueChange(setting.copy(apiKey = newApiKey))
+            },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("sk_xxx") },
+        )
+    }
+
+    FormItem(
+        label = { Text(stringResource(R.string.setting_tts_page_base_url)) },
+        description = { Text(stringResource(R.string.setting_tts_page_base_url_description)) }
+    ) {
+        OutlinedTextField(
+            value = setting.baseUrl,
+            onValueChange = { newBaseUrl ->
+                onValueChange(setting.copy(baseUrl = newBaseUrl))
+            },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("https://api.elevenlabs.io/v1") }
+        )
+    }
+
+    FormItem(
+        label = { Text(stringResource(R.string.setting_tts_page_voice_id)) },
+        description = { Text(stringResource(R.string.setting_tts_page_voice_id_description)) }
+    ) {
+        OutlinedTextField(
+            value = setting.voiceId,
+            onValueChange = { newVoiceId ->
+                onValueChange(setting.copy(voiceId = newVoiceId))
+            },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("21m00Tcm4TlvDq8ikWAM") }
+        )
+    }
+
+    var modelExpanded by remember { mutableStateOf(false) }
+    val models = listOf("eleven_multilingual_v2", "eleven_flash_v2_5", "eleven_turbo_v2_5", "eleven_v3")
+
+    FormItem(
+        label = { Text(stringResource(R.string.setting_tts_page_model)) },
+        description = { Text(stringResource(R.string.setting_tts_page_model_description)) }
+    ) {
+        ExposedDropdownMenuBox(
+            expanded = modelExpanded,
+            onExpandedChange = { modelExpanded = !modelExpanded }
+        ) {
+            OutlinedTextField(
+                value = setting.modelId,
+                onValueChange = { newModel ->
+                    onValueChange(setting.copy(modelId = newModel))
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .menuAnchor(MenuAnchorType.PrimaryEditable),
+                trailingIcon = {
+                    ExposedDropdownMenuDefaults.TrailingIcon(expanded = modelExpanded)
+                }
+            )
+            ExposedDropdownMenu(
+                expanded = modelExpanded,
+                onDismissRequest = { modelExpanded = false }
+            ) {
+                models.forEach { model ->
+                    DropdownMenuItem(
+                        text = { Text(model) },
+                        onClick = {
+                            modelExpanded = false
+                            onValueChange(setting.copy(modelId = model))
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    FormItem(
+        label = { Text(stringResource(R.string.setting_tts_page_stability)) },
+        description = { Text(stringResource(R.string.setting_tts_page_stability_description)) }
+    ) {
+        OutlinedNumberInput(
+            value = setting.stability,
+            onValueChange = { newVal ->
+                if (newVal in 0f..1f) {
+                    onValueChange(setting.copy(stability = newVal))
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            label = stringResource(R.string.setting_tts_page_stability)
+        )
+    }
+
+    FormItem(
+        label = { Text(stringResource(R.string.setting_tts_page_similarity_boost)) },
+        description = { Text(stringResource(R.string.setting_tts_page_similarity_boost_description)) }
+    ) {
+        OutlinedNumberInput(
+            value = setting.similarityBoost,
+            onValueChange = { newVal ->
+                if (newVal in 0f..1f) {
+                    onValueChange(setting.copy(similarityBoost = newVal))
+                }
+            },
+            modifier = Modifier.fillMaxWidth(),
+            label = stringResource(R.string.setting_tts_page_similarity_boost)
+        )
     }
 }

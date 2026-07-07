@@ -950,6 +950,10 @@
   <string name="setting_tts_page_speech_rate_description">控制語音播放速度 (0.1 - 3.0，1.0為正常速度)</string>
   <string name="setting_tts_page_speed">語速</string>
   <string name="setting_tts_page_speed_description">語音合成速度 (0.25 - 4.0)</string>
+  <string name="setting_tts_page_stability">穩定性</string>
+  <string name="setting_tts_page_stability_description">語音穩定性 (0.0 - 1.0)，越高越穩定但可能顯得單調</string>
+  <string name="setting_tts_page_similarity_boost">相似度增強</string>
+  <string name="setting_tts_page_similarity_boost_description">生成語音與原始音色的相似程度 (0.0 - 1.0)</string>
   <string name="setting_tts_page_test_text">你好，這是文字轉語音測試。</string>
   <string name="setting_tts_page_title">語音合成</string>
   <string name="setting_tts_page_voice">語音</string>

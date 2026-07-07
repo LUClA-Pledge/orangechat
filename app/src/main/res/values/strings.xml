@@ -996,6 +996,10 @@
   <string name="setting_tts_page_speech_rate_description">Control the speed of speech (0.1 - 3.0, 1.0 is normal)</string>
   <string name="setting_tts_page_speed">Speed</string>
   <string name="setting_tts_page_speed_description">Speech speed (0.25 - 4.0)</string>
+  <string name="setting_tts_page_stability">Stability</string>
+  <string name="setting_tts_page_stability_description">Voice stability (0.0 - 1.0), higher is more consistent but can sound monotonous</string>
+  <string name="setting_tts_page_similarity_boost">Similarity Boost</string>
+  <string name="setting_tts_page_similarity_boost_description">How closely the output matches the original voice (0.0 - 1.0)</string>
   <string name="setting_tts_page_test_text">Hello, this is a text-to-speech test.</string>
   <string name="setting_tts_page_title">Text-to-Speech</string>
   <string name="setting_tts_page_voice">Voice</string>

@@ -1,5 +1,5 @@
 package me.rerere.rikkahub.ui.components.message
-
+ 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -39,14 +39,13 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import me.rerere.ai.provider.Model
 import me.rerere.ai.ui.UIMessagePart
-import me.rerere.hugeicons.HugeIcons
-import me.rerere.hugeicons.stroke.Idea01
 import me.rerere.rikkahub.R
 import me.rerere.rikkahub.data.model.Assistant
 import me.rerere.rikkahub.data.model.AssistantAffectScope
 import me.rerere.rikkahub.data.model.replaceRegexes
 import me.rerere.rikkahub.ui.components.richtext.MarkdownBlock
 import me.rerere.rikkahub.ui.components.ui.ChainOfThoughtScope
+import me.rerere.rikkahub.ui.components.ui.icons.OrangePetalIcon
 import me.rerere.rikkahub.ui.context.LocalSettings
 import me.rerere.rikkahub.ui.modifier.shimmer
 import me.rerere.rikkahub.utils.extractThinkingTitle
@@ -54,13 +53,13 @@ import kotlin.time.Clock
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.DurationUnit
-
+ 
 enum class ReasoningCardState(val expanded: Boolean) {
     Collapsed(false),
     Preview(true),
     Expanded(true),
 }
-
+ 
 @Stable
 private class ReasoningState(
     val scrollState: ScrollState,
@@ -68,7 +67,7 @@ private class ReasoningState(
 ) {
     var expandState by mutableStateOf(ReasoningCardState.Collapsed)
     var duration by mutableStateOf(initialDuration)
-
+ 
     fun onExpandedChange(nextExpanded: Boolean, loading: Boolean) {
         expandState = if (loading) {
             if (nextExpanded) ReasoningCardState.Expanded else ReasoningCardState.Preview
@@ -77,13 +76,13 @@ private class ReasoningState(
         }
     }
 }
-
+ 
 @Composable
 private fun rememberReasoningState(reasoning: UIMessagePart.Reasoning): Pair<ReasoningState, Boolean> {
     val settings = LocalSettings.current
     val loading = reasoning.finishedAt == null
     val scrollState = rememberScrollState()
-
+ 
     val state = remember(reasoning.createdAt) {
         ReasoningState(
             scrollState = scrollState,
@@ -91,7 +90,7 @@ private fun rememberReasoningState(reasoning: UIMessagePart.Reasoning): Pair<Rea
                 ?: (Clock.System.now() - reasoning.createdAt)
         )
     }
-
+ 
     LaunchedEffect(reasoning.reasoning, loading) {
         if (loading) {
             if (!state.expandState.expanded && settings.displaySetting.showThinkingContent)
@@ -106,7 +105,7 @@ private fun rememberReasoningState(reasoning: UIMessagePart.Reasoning): Pair<Rea
             }
         }
     }
-
+ 
     LaunchedEffect(loading) {
         if (loading) {
             while (isActive) {
@@ -115,10 +114,10 @@ private fun rememberReasoningState(reasoning: UIMessagePart.Reasoning): Pair<Rea
             }
         }
     }
-
+ 
     return state to loading
 }
-
+ 
 @Composable
 private fun ReasoningContent(
     reasoning: UIMessagePart.Reasoning,
@@ -133,7 +132,7 @@ private fun ReasoningContent(
         fontSize = MaterialTheme.typography.bodySmall.fontSize * settings.displaySetting.thinkingFontSizeRatio,
         lineHeight = MaterialTheme.typography.bodySmall.lineHeight * settings.displaySetting.thinkingFontSizeRatio,
     )
-
+ 
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -181,7 +180,7 @@ private fun ReasoningContent(
         }
     }
 }
-
+ 
 @Composable
 fun ChainOfThoughtScope.ChatMessageReasoningStep(
     reasoning: UIMessagePart.Reasoning,
@@ -193,13 +192,13 @@ fun ChainOfThoughtScope.ChatMessageReasoningStep(
     val (state, loading) = rememberReasoningState(reasoning)
     val thinkingTitle = reasoning.reasoning.extractThinkingTitle()
     val showThinkingTitle = loading && thinkingTitle != null
-
+ 
     ControlledChainOfThoughtStep(
         expanded = state.expandState == ReasoningCardState.Expanded,
         onExpandedChange = { state.onExpandedChange(it, loading) },
         icon = {
             Icon(
-                imageVector = HugeIcons.Idea01,
+                imageVector = OrangePetalIcon,
                 contentDescription = null,
                 modifier = Modifier.size(16.dp),
                 tint = MaterialTheme.colorScheme.secondary,
@@ -243,8 +242,8 @@ fun ChainOfThoughtScope.ChatMessageReasoningStep(
         },
     )
 }
-
-
+ 
+ 
 @Composable
 private fun ReasoningTitle(title: String) {
     AnimatedContent(

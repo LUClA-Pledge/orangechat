@@ -1,5 +1,5 @@
 package me.rerere.rikkahub.data.ai.tools
-
+ 
 import android.content.Context
 import com.whl.quickjs.wrapper.QuickJSContext
 import com.whl.quickjs.wrapper.QuickJSObject
@@ -25,25 +25,25 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.TextStyle
 import java.util.Locale
-
+ 
 @Serializable
 sealed class LocalToolOption {
     @Serializable
     @SerialName("javascript_engine")
     data object JavascriptEngine : LocalToolOption()
-
+ 
     @Serializable
     @SerialName("time_info")
     data object TimeInfo : LocalToolOption()
-
+ 
     @Serializable
     @SerialName("clipboard")
     data object Clipboard : LocalToolOption()
-
+ 
     @Serializable
     @SerialName("tts")
     data object Tts : LocalToolOption()
-
+ 
     /**
      * AI 主动发起语音通话 (聊着聊着想打就打).
      * 开启后 AI 可在合适时机调用 request_voice_call, 弹出来电界面邀请用户接听.
@@ -51,11 +51,11 @@ sealed class LocalToolOption {
     @Serializable
     @SerialName("request_voice_call")
     data object RequestVoiceCall : LocalToolOption()
-
+ 
     @Serializable
     @SerialName("ask_user")
     data object AskUser : LocalToolOption()
-
+ 
     /**
      * 已废弃: 本地短信工具与系统工具(SystemToolOption.Sms)都注册成同名 read_sms,
      * 同时启用会让某些模型因同名工具报错发不出消息。短信读取统一改由系统工具侧提供
@@ -67,16 +67,34 @@ sealed class LocalToolOption {
     @Serializable
     @SerialName("sms")
     data object Sms : LocalToolOption()
-
+ 
     @Serializable
     @SerialName("calendar")
     data object Calendar : LocalToolOption()
-
+ 
+    @Serializable
+    @SerialName("web_fetch")
+    data object WebFetch : LocalToolOption()
+ 
+    @Serializable
+    @SerialName("list_zip_contents")
+    data object ListZipContents : LocalToolOption()
+ 
+    /**
+     * 已废弃: check_token_usage 工具是个空壳(只返回占位字符串),
+     * 已完整删除工具实现和UI卡片。保留此 sealed 子类仅为向后兼容:
+     * 存量助手的 localTools JSON 里可能含 {"type":"check_token_usage"},
+     * 若删除会导致 Settings 反序列化失败使应用无法启动。它不再出现在 UI, 也不再注册工具。
+     */
+    @Serializable
+    @SerialName("check_token_usage")
+    data object CheckTokenUsage : LocalToolOption()
+ 
     @Serializable
     @SerialName("allow_skip_reply")
     data object AllowSkipReply : LocalToolOption()
 }
-
+ 
 class LocalTools(private val context: Context, private val eventBus: AppEventBus) {
     val javascriptTool by lazy {
         Tool(
@@ -107,15 +125,15 @@ class LocalTools(private val context: Context, private val eventBus: AppEventBus
                     override fun log(info: String?) {
                         logs.add("[LOG] $info")
                     }
-
+ 
                     override fun info(info: String?) {
                         logs.add("[INFO] $info")
                     }
-
+ 
                     override fun warn(info: String?) {
                         logs.add("[WARN] $info")
                     }
-
+ 
                     override fun error(info: String?) {
                         logs.add("[ERROR] $info")
                     }
@@ -139,7 +157,7 @@ class LocalTools(private val context: Context, private val eventBus: AppEventBus
             }
         )
     }
-
+ 
     val timeTool by lazy {
         Tool(
             name = "get_time_info",
@@ -175,7 +193,7 @@ class LocalTools(private val context: Context, private val eventBus: AppEventBus
             }
         )
     }
-
+ 
     val clipboardTool by lazy {
         Tool(
             name = "clipboard_tool",
@@ -216,7 +234,7 @@ class LocalTools(private val context: Context, private val eventBus: AppEventBus
                         }
                         listOf(UIMessagePart.Text(payload.toString()))
                     }
-
+ 
                     "write" -> {
                         val text = params["text"]?.jsonPrimitive?.contentOrNull ?: error("text is required")
                         context.writeClipboardText(text)
@@ -226,13 +244,13 @@ class LocalTools(private val context: Context, private val eventBus: AppEventBus
                         }
                         listOf(UIMessagePart.Text(payload.toString()))
                     }
-
+ 
                     else -> error("unknown action: $action, must be one of [read, write]")
                 }
             }
         )
     }
-
+ 
     val ttsTool by lazy {
         Tool(
             name = "text_to_speech",
@@ -264,7 +282,7 @@ class LocalTools(private val context: Context, private val eventBus: AppEventBus
             }
         )
     }
-
+ 
     val askUserTool by lazy {
         Tool(
             name = "ask_user",
@@ -333,7 +351,7 @@ class LocalTools(private val context: Context, private val eventBus: AppEventBus
             }
         )
     }
-
+ 
     /**
      * AI 主动发起语音通话工具.
      * conversationId 在工具构建时闭包捕获 (execute 拿不到上下文),
@@ -380,7 +398,97 @@ class LocalTools(private val context: Context, private val eventBus: AppEventBus
             listOf(UIMessagePart.Text(payload.toString()))
         }
     )
-
+ 
+    val webFetchTool by lazy {
+        Tool(
+            name = "web_fetch",
+            description = "Fetch the content of a web page. Returns the raw HTML or text content. Useful for reading articles, API endpoints, or scraping data. Supports timeout and max length limits.",
+            parameters = {
+                InputSchema.Obj(
+                    properties = buildJsonObject {
+                        put("url", buildJsonObject { put("type", "string"); put("description", "URL to fetch") })
+                        put("max_length", buildJsonObject { put("type", "integer"); put("description", "Max content length in chars (default 10000)") })
+                    },
+                    required = listOf("url")
+                )
+            },
+            execute = {
+                val url = it.jsonObject["url"]?.jsonPrimitive?.contentOrNull ?: error("url is required")
+                val maxLen = it.jsonObject["max_length"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 10000
+                try {
+                    val connection = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                    connection.requestMethod = "GET"
+                    connection.connectTimeout = 15000
+                    connection.readTimeout = 15000
+                    connection.setRequestProperty("User-Agent", "Mozilla/5.0 (Android; AI Assistant)")
+                    val code = connection.responseCode
+                    val body = if (code in 200..299) {
+                        connection.inputStream.bufferedReader().use { it.readText() }
+                    } else {
+                        connection.errorStream?.bufferedReader()?.use { it.readText() } ?: "HTTP $code"
+                    }
+                    val truncated = if (body.length > maxLen) body.take(maxLen) + "...[truncated]" else body
+                    listOf(UIMessagePart.Text(buildJsonObject {
+                        put("success", code in 200..299); put("status_code", code); put("url", url)
+                        put("content", truncated); put("content_length", body.length)
+                    }.toString()))
+                } catch (e: Exception) {
+                    listOf(UIMessagePart.Text(buildJsonObject { put("success", false); put("error", e.message ?: "") }.toString()))
+                }
+            }
+        )
+    }
+ 
+    val listZipContentsTool by lazy {
+        Tool(
+            name = "list_zip_contents",
+            description = "List the contents of a ZIP file. Returns file names, sizes, and compressed sizes. Supports local file paths or content URIs.",
+            parameters = {
+                InputSchema.Obj(
+                    properties = buildJsonObject {
+                        put("path", buildJsonObject { put("type", "string"); put("description", "File path or content URI of the ZIP file") })
+                    },
+                    required = listOf("path")
+                )
+            },
+            execute = {
+                val path = it.jsonObject["path"]?.jsonPrimitive?.contentOrNull ?: error("path is required")
+                try {
+                    val inputStream = if (path.startsWith("content://")) {
+                        context.contentResolver.openInputStream(android.net.Uri.parse(path))
+                    } else {
+                        java.io.FileInputStream(path)
+                    }
+                    inputStream?.use { stream ->
+                        java.util.zip.ZipInputStream(stream).use { zis ->
+                            val entries = mutableListOf<Map<String, Any>>()
+                            var entry = zis.nextEntry
+                            while (entry != null) {
+                                entries.add(mapOf("name" to entry.name, "size" to entry.size, "compressed_size" to entry.compressedSize))
+                                zis.closeEntry()
+                                entry = zis.nextEntry
+                            }
+                            listOf(UIMessagePart.Text(buildJsonObject {
+                                put("success", true); put("count", entries.size)
+                                put("entries", kotlinx.serialization.json.buildJsonArray {
+                                    entries.forEach { e ->
+                                        add(buildJsonObject {
+                                            put("name", e["name"].toString())
+                                            put("size", e["size"] as Long)
+                                            put("compressed_size", e["compressed_size"] as Long)
+                                        })
+                                    }
+                                })
+                            }.toString()))
+                        }
+                    } ?: listOf(UIMessagePart.Text(buildJsonObject { put("success", false); put("error", "Cannot open file") }.toString()))
+                } catch (e: Exception) {
+                    listOf(UIMessagePart.Text(buildJsonObject { put("success", false); put("error", e.message ?: "") }.toString()))
+                }
+            }
+        )
+    }
+ 
     fun getTools(
         options: List<LocalToolOption>,
         conversationId: String? = null,
@@ -407,6 +515,12 @@ class LocalTools(private val context: Context, private val eventBus: AppEventBus
         // 注: 本地短信工具已废弃, 与系统工具同名冲突。改由系统工具侧提供。
         if (options.contains(LocalToolOption.Calendar)) {
             tools.add(createCalendarTool(context))
+        }
+        if (options.contains(LocalToolOption.WebFetch)) {
+            tools.add(webFetchTool)
+        }
+        if (options.contains(LocalToolOption.ListZipContents)) {
+            tools.add(listZipContentsTool)
         }
         return tools
     }

@@ -3,11 +3,16 @@ package me.rerere.rikkahub.data.ai
 import android.content.Context
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.Serializable
@@ -384,65 +389,78 @@ class GenerationHandler(
                     if (externalMemoryConfigs.isNotEmpty()) {
                         val lastUserMessage = messages.lastOrNull { it.role == MessageRole.USER }
                         val queryText = lastUserMessage?.toText()?.take(200)?.trim() ?: ""
-                        val allRecalled = mutableListOf<String>()
-                        externalMemoryConfigs.forEach { config ->
-                            runCatching {
-                                val service = me.rerere.rikkahub.data.service.ExternalMemoryService(config)
- 
-                                // 如果配置了向量模型，使用向量召回日记摘要
-                                if (config.embeddingModelId != null && queryText.isNotBlank()) {
-                                    val embeddingModel = settings.findModelById(config.embeddingModelId)
-                                    if (embeddingModel != null) {
-                                        val embeddingProvider = embeddingModel.findProvider(settings.providers)
-                                        if (embeddingProvider != null) {
-                                            val embeddingProviderImpl = providerManager.getProviderByType(embeddingProvider)
-                                            val embedResult = embeddingProviderImpl.generateEmbedding(
-                                                providerSetting = embeddingProvider,
-                                                params = EmbeddingGenerationParams(
-                                                    model = embeddingModel,
-                                                    input = listOf(queryText),
-                                                )
-                                            )
-                                            val queryEmbedding = embedResult.embeddings.firstOrNull()
-                                            if (queryEmbedding != null) {
-                                                val recalledSummaries = service.vectorRecallSummaries(
-                                                    queryEmbedding = queryEmbedding,
-                                                    assistantId = assistant.id.toString(),
-                                                    count = config.recallCount,
-                                                ).getOrDefault(emptyList())
-                                                recalledSummaries.forEach { summary ->
-                                                    allRecalled.add(summary.content)
+                        // 并发检索所有外置记忆库配置，每个配置最多 8 秒超时
+                        val allRecalled = coroutineScope {
+                            externalMemoryConfigs.map { config ->
+                                async {
+                                    withTimeoutOrNull(8.seconds) {
+                                        runCatching {
+                                            val service = me.rerere.rikkahub.data.service.ExternalMemoryService(config)
+                                            val recalled = mutableListOf<String>()
+
+                                            // 如果配置了向量模型，使用向量召回日记摘要
+                                            if (config.embeddingModelId != null && queryText.isNotBlank()) {
+                                                val embeddingModel = settings.findModelById(config.embeddingModelId)
+                                                if (embeddingModel != null) {
+                                                    val embeddingProvider = embeddingModel.findProvider(settings.providers)
+                                                    if (embeddingProvider != null) {
+                                                        val embeddingProviderImpl = providerManager.getProviderByType(embeddingProvider)
+                                                        val embedResult = embeddingProviderImpl.generateEmbedding(
+                                                            providerSetting = embeddingProvider,
+                                                            params = EmbeddingGenerationParams(
+                                                                model = embeddingModel,
+                                                                input = listOf(queryText),
+                                                            )
+                                                        )
+                                                        val queryEmbedding = embedResult.embeddings.firstOrNull()
+                                                        if (queryEmbedding != null) {
+                                                            val recalledSummaries = service.vectorRecallSummaries(
+                                                                queryEmbedding = queryEmbedding,
+                                                                assistantId = assistant.id.toString(),
+                                                                count = config.recallCount,
+                                                            ).getOrDefault(emptyList())
+                                                            recalledSummaries.forEach { summary ->
+                                                                recalled.add(summary.content)
+                                                            }
+                                                            Log.d(TAG, "Vector recall ${recalledSummaries.size} summaries from ${config.name}")
+                                                        }
+                                                    }
                                                 }
-                                                Log.d(TAG, "Vector recall ${recalledSummaries.size} summaries from ${config.name}")
+                                            } else {
+                                                // 回退：文本召回聊天记录
+                                                val recalledMessages = if (queryText.isNotBlank()) {
+                                                    service.searchMessages(
+                                                        assistantId = assistant.id.toString(),
+                                                        keyword = queryText,
+                                                        limit = config.recallCount,
+                                                    ).getOrDefault(emptyList())
+                                                } else {
+                                                    service.queryLatestMessages(
+                                                        assistantId = assistant.id.toString(),
+                                                        limit = config.recallCount,
+                                                    ).getOrDefault(emptyList())
+                                                }
+                                                recalledMessages.forEach { msg ->
+                                                    val prefix = when (msg.role) {
+                                                        "assistant" -> "AI"
+                                                        "user" -> "用户"
+                                                        else -> msg.role
+                                                    }
+                                                    recalled.add("[$prefix] ${msg.content}")
+                                                }
                                             }
-                                        }
-                                    }
-                                } else {
-                                    // 回退：文本召回聊天记录
-                                    val recalledMessages = if (queryText.isNotBlank()) {
-                                        service.searchMessages(
-                                            assistantId = assistant.id.toString(),
-                                            keyword = queryText,
-                                            limit = config.recallCount,
-                                        ).getOrDefault(emptyList())
-                                    } else {
-                                        service.queryLatestMessages(
-                                            assistantId = assistant.id.toString(),
-                                            limit = config.recallCount,
-                                        ).getOrDefault(emptyList())
-                                    }
-                                    recalledMessages.forEach { msg ->
-                                        val prefix = when (msg.role) {
-                                            "assistant" -> "AI"
-                                            "user" -> "用户"
-                                            else -> msg.role
-                                        }
-                                        allRecalled.add("[$prefix] ${msg.content}")
+                                            recalled
+                                        }.onFailure {
+                                            Log.w(TAG, "External memory recall failed for ${config.name}", it)
+                                        }.getOrNull()
+                                    } ?: run {
+                                        Log.w(TAG, "External memory recall timed out for ${config.name}")
+                                        null
                                     }
                                 }
-                            }.onFailure {
-                                Log.w(TAG, "External memory recall failed for ${config.name}", it)
-                            }
+                            }.awaitAll()
+                                .filterNotNull()
+                                .flatten()
                         }
                         if (allRecalled.isNotEmpty()) {
                             appendLine()

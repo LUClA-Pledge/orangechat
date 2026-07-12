@@ -21,9 +21,9 @@ class SkillManager(
         return dir
     }
 
-    fun listSkills(): List<SkillMetadata> {
+    suspend fun listSkills(): List<SkillMetadata> = withContext(Dispatchers.IO) {
         val skillsDir = getSkillsDir()
-        return skillsDir.listFiles()
+        skillsDir.listFiles()
             ?.filter { it.isDirectory }
             ?.mapNotNull { dir ->
                 val skillFile = dir.resolve("SKILL.md")

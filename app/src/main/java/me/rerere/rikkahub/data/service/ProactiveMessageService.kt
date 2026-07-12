@@ -850,7 +850,7 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
     /**
      * 构建工具列表（与 ChatService 保持一致）
      */
-    private fun buildTools(settings: Settings, assistant: Assistant, model: Model): List<Tool> {
+    private suspend fun buildTools(settings: Settings, assistant: Assistant, model: Model): List<Tool> {
         return buildList {
             // 搜索工具
             if (settings.enableWebSearch) {

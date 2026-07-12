@@ -167,6 +167,10 @@ class SettingsStore(
 
     private val dataStore = context.settingsStore
 
+    // 用于检测 assistants 列表是否真正变化，避免无关设置写入触发 Pebble 模板缓存清空
+    @Volatile
+    private var lastAssistantsForCacheInvalidation: List<Assistant>? = null
+
     val settingsFlowRaw = dataStore.data
         .catch { exception ->
             if (exception is IOException) {
@@ -359,8 +363,13 @@ class SettingsStore(
                 miniApps = settings.miniApps.distinctBy { it.id },
             )
         }
-        .onEach {
-            get<PebbleEngine>().templateCache.invalidateAll()
+        .onEach { settings ->
+            // 只在助手列表变化时才清空 Pebble 模板缓存（assistant 的 messageTemplate 字段决定模板内容）
+            // 避免无关设置变化（如显示设置、provider 设置等）触发不必要的模板重新编译
+            if (settings.assistants != lastAssistantsForCacheInvalidation) {
+                lastAssistantsForCacheInvalidation = settings.assistants
+                get<PebbleEngine>().templateCache.invalidateAll()
+            }
         }
 
     val settingsFlow = settingsFlowRaw

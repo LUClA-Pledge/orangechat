@@ -459,7 +459,7 @@ class ChatService(
                     Log.w(TAG, "Failed to trigger message_sent event", e)
                 }
 
-                // 保存用户消息到外置记忆库
+                // 保存用户消息到外置记忆库（fire-and-forget，不阻塞后续生成流程）
                 try {
                     val settingsRaw = settingsStore.settingsFlowRaw.first()
                     val externalMemoryConfigs = settingsRaw.externalMemories.filter {
@@ -469,20 +469,18 @@ class ChatService(
                         val messageText = processedContent.mapNotNull { part ->
                             if (part is UIMessagePart.Text) part.text else null
                         }.joinToString("\n")
-                        kotlinx.coroutines.coroutineScope {
-                            externalMemoryConfigs.forEach { config ->
-                                launch {
-                                    runCatching {
-                                        val service = me.rerere.rikkahub.data.service.ExternalMemoryService(config)
-                                        service.saveMessage(
-                                            assistantId = assistant.id.toString(),
-                                            conversationId = conversationId.toString(),
-                                            role = "user",
-                                            content = messageText,
-                                        )
-                                    }.onFailure {
-                                        Log.w(TAG, "Failed to save user message to external memory ${config.name}", it)
-                                    }
+                        externalMemoryConfigs.forEach { config ->
+                            appScope.launch {
+                                runCatching {
+                                    val service = me.rerere.rikkahub.data.service.ExternalMemoryService(config)
+                                    service.saveMessage(
+                                        assistantId = assistant.id.toString(),
+                                        conversationId = conversationId.toString(),
+                                        role = "user",
+                                        content = messageText,
+                                    )
+                                }.onFailure {
+                                    Log.w(TAG, "Failed to save user message to external memory ${config.name}", it)
                                 }
                             }
                         }

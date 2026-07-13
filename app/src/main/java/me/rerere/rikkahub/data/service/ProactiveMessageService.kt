@@ -10,6 +10,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
@@ -632,12 +633,18 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                     // AI 选择跳过，移除本次生成的 aiMessage node（基于 id 匹配，不误删历史）
                     Log.d(ProactiveMessageService.TAG, "AI chose to skip proactive message")
                     val aiId = aiMessage.id
-                    chatService.updateConversationState(conversationId) { conv ->
-                        conv.copy(
-                            messageNodes = conv.messageNodes.filterNot { node ->
-                                node.messages.any { it.id == aiId }
-                            }
+                    val session = chatService.getOrCreateSession(conversationId)
+                    session.saveMutex.withLock {
+                        val conv = chatService.getConversationFlow(conversationId).value
+                        chatService.updateConversation(
+                            conversationId,
+                            conv.copy(
+                                messageNodes = conv.messageNodes.filterNot { node ->
+                                    node.messages.any { it.id == aiId }
+                                }
+                            )
                         )
+                        chatService.saveConversation(conversationId, chatService.getConversationFlow(conversationId).value)
                     }
                 } else {
                     // 有效回复：session 里已有 aiMessage（流式过程已追加），持久化并发通知
@@ -799,19 +806,33 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
     ): Uuid {
         val assistantUuid = assistant.id
 
-        // 确保对话存在于数据库（新建时 insert）
+        // 确保对话存在于数据库（新建时 insert）。
+        // 若 session 为空且没有已存对话，先 insert 一条空对话占位，避免后续 saveConversation 跳过。
         if (existingConversation == null) {
-            val newConversation = Conversation(
-                id = conversationId,
-                assistantId = assistantUuid,
-                title = "",
-                messageNodes = emptyList()
-            )
-            conversationRepository.insertConversation(newConversation)
+            val session = chatService.getOrCreateSession(conversationId)
+            session.saveMutex.withLock {
+                val exists = conversationRepository.existsConversationById(conversationId)
+                if (!exists) {
+                    val newConversation = Conversation(
+                        id = conversationId,
+                        assistantId = assistantUuid,
+                        title = "",
+                        messageNodes = emptyList()
+                    )
+                    conversationRepository.insertConversation(newConversation)
+                }
+            }
         }
 
-        // 流式过程中已实时追加 aiMessage 到 session，这里直接持久化当前 session 状态
-        chatService.saveConversation(conversationId, chatService.getConversationFlow(conversationId).value)
+        // 流式过程中已实时追加 aiMessage 到 session，这里直接持久化当前 session 状态。
+        // 加 saveMutex 防止与用户发送消息/其他主动消息并发覆盖。
+        val session = chatService.getOrCreateSession(conversationId)
+        session.saveMutex.withLock {
+            chatService.saveConversation(
+                conversationId,
+                chatService.getConversationFlow(conversationId).value
+            )
+        }
 
         Log.d(TAG, "Saved proactive message to conversation $conversationId")
         return conversationId
@@ -901,16 +922,21 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
     /**
      * 基于 AI 消息 id 在对话里就地更新（保留 MessageNode.id，避免 Compose 重建/状态丢失）
      * 或追加新 node。不使用 toMessageNode() 生成随机新 id，也不用 dropLast(1) 盲目删除。
+     *
+     * 注意：这里必须走 saveMutex 保护，因为流式更新与 ChatService.sendMessage/addProactiveMessage
+     * 可能并发修改同一会话，read-modify-write 不加锁会导致后写入者覆盖前者。
      */
-    private fun updateOrAppendAiMessage(
+    private suspend fun updateOrAppendAiMessage(
         conversationId: Uuid,
         aiMessage: UIMessage
     ) {
-        chatService.updateConversationState(conversationId) { conv ->
+        val session = chatService.getOrCreateSession(conversationId)
+        session.saveMutex.withLock {
+            val conv = chatService.getConversationFlow(conversationId).value
             val existingNodeIndex = conv.messageNodes.indexOfFirst { node ->
                 node.messages.any { it.id == aiMessage.id }
             }
-            if (existingNodeIndex >= 0) {
+            val updated = if (existingNodeIndex >= 0) {
                 // 已存在该 id 的 node：保留 node id，只更新其 messages
                 val oldNode = conv.messageNodes[existingNodeIndex]
                 val updatedNode = oldNode.copy(
@@ -927,6 +953,8 @@ class ProactiveMessageTriggerService : android.app.Service(), KoinComponent {
                 // 本次生成的 node 还没有：追加（首次调用时才创建新 node）
                 conv.copy(messageNodes = conv.messageNodes + aiMessage.toMessageNode())
             }
+            chatService.updateConversation(conversationId, updated)
+            chatService.saveConversation(conversationId, updated)
         }
     }
 

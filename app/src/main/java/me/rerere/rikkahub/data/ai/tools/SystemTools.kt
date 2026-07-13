@@ -254,16 +254,19 @@ class SystemTools(private val context: Context, private val settings: Settings) 
                         put("error", "Missing required parameter 'operation'")
                     }.toString()))
 
-                val s = settings.systemToolsSetting
-                if (!s.supabaseEnabled || s.supabaseUrl.isBlank() || s.supabaseApiKey.isBlank()) {
+                val externalMemories = settings.externalMemories.filter { it.enabled }
+                if (externalMemories.isEmpty()) {
                     return@Tool listOf(UIMessagePart.Text(buildJsonObject {
                         put("success", false)
-                        put("error", "Supabase is not configured. Please enable Supabase sync and set URL/API Key in settings.")
+                        put("error", "No enabled external memory configured. Please add a Supabase external memory in settings.")
                     }.toString()))
                 }
 
                 val table = params["table"]?.jsonPrimitive?.contentOrNull ?: "chat_messages"
-                val baseUrl = s.supabaseUrl.trimEnd('/')
+                val memory = externalMemories.firstOrNull { it.tableName == table || it.summariesTableName == table }
+                    ?: externalMemories.first()
+                val baseUrl = memory.supabaseUrl.trimEnd('/')
+                val apiKey = memory.supabaseKey
 
                 try {
                     when (operation) {
@@ -272,8 +275,8 @@ class SystemTools(private val context: Context, private val settings: Settings) 
                             val url = java.net.URL("$baseUrl/rest/v1/$table?select=*&order=created_at.desc&limit=$count")
                             val connection = (url.openConnection() as java.net.HttpURLConnection).apply {
                                 requestMethod = "GET"
-                                setRequestProperty("apikey", s.supabaseApiKey)
-                                setRequestProperty("Authorization", "Bearer ${s.supabaseApiKey}")
+                                setRequestProperty("apikey", apiKey)
+                                setRequestProperty("Authorization", "Bearer ${apiKey}")
                                 setRequestProperty("Accept", "application/json")
                                 connectTimeout = 15000
                                 readTimeout = 15000
@@ -305,8 +308,8 @@ class SystemTools(private val context: Context, private val settings: Settings) 
                             val url = java.net.URL("$baseUrl/rest/v1/$table?select=*&content=ilike.$encodedKeyword&limit=$limit")
                             val connection = (url.openConnection() as java.net.HttpURLConnection).apply {
                                 requestMethod = "GET"
-                                setRequestProperty("apikey", s.supabaseApiKey)
-                                setRequestProperty("Authorization", "Bearer ${s.supabaseApiKey}")
+                                setRequestProperty("apikey", apiKey)
+                                setRequestProperty("Authorization", "Bearer ${apiKey}")
                                 setRequestProperty("Accept", "application/json")
                                 connectTimeout = 15000
                                 readTimeout = 15000

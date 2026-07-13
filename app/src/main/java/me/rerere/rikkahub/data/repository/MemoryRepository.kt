@@ -14,23 +14,33 @@ class MemoryRepository(private val memoryDAO: MemoryDAO) {
     fun getMemoriesOfAssistantFlow(assistantId: String): Flow<List<AssistantMemory>> =
         memoryDAO.getMemoriesOfAssistantFlow(assistantId)
             .map { entities ->
-                entities.map { AssistantMemory(it.id, it.content) }
+                entities.filterNot { it.isSummaryMemory() }
+                    .map { AssistantMemory(it.id, it.content) }
             }
 
     suspend fun getMemoriesOfAssistant(assistantId: String): List<AssistantMemory> {
         return memoryDAO.getMemoriesOfAssistant(assistantId)
+            .filterNot { it.isSummaryMemory() }
             .map { AssistantMemory(it.id, it.content) }
     }
 
     fun getGlobalMemoriesFlow(): Flow<List<AssistantMemory>> =
         memoryDAO.getMemoriesOfAssistantFlow(GLOBAL_MEMORY_ID)
             .map { entities ->
-                entities.map { AssistantMemory(it.id, it.content) }
+                entities.filterNot { it.isSummaryMemory() }
+                    .map { AssistantMemory(it.id, it.content) }
             }
 
     suspend fun getGlobalMemories(): List<AssistantMemory> {
         return memoryDAO.getMemoriesOfAssistant(GLOBAL_MEMORY_ID)
+            .filterNot { it.isSummaryMemory() }
             .map { AssistantMemory(it.id, it.content) }
+    }
+
+    private fun MemoryEntity.isSummaryMemory(): Boolean {
+        return content.startsWith("[daily_summary]") ||
+            content.startsWith("[phase_summary]") ||
+            content.startsWith("[auto_summary]")
     }
 
     suspend fun deleteMemoriesOfAssistant(assistantId: String) {

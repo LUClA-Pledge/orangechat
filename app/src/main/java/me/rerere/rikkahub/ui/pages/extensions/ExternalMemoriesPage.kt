@@ -357,7 +357,7 @@ private fun ExternalMemoryEditDialog(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("自动保存日记摘要")
+                        Text("Supabase 端生成日记摘要")
                         Switch(
                             checked = autoSaveDiarySummary,
                             onCheckedChange = { autoSaveDiarySummary = it }

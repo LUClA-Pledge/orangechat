@@ -386,6 +386,9 @@ class GenerationHandler(
                     val externalMemoryConfigs = settings.externalMemories.filter {
                         it.enabled && it.id in assistant.externalMemoryIds
                     }
+                    externalMemoryConfigs.forEach { config ->
+                        Log.i(TAG, "ExternalMemory config: name=${config.name}, url=${config.supabaseUrl}, table=${config.tableName}, summaryTable=${config.summariesTableName}, embeddingModelId=${config.embeddingModelId}, autoSaveDiarySummary=${config.autoSaveDiarySummary}")
+                    }
                     if (externalMemoryConfigs.isNotEmpty()) {
                         val lastUserMessage = messages.lastOrNull { it.role == MessageRole.USER }
                         val queryText = lastUserMessage?.toText()?.take(200)?.trim() ?: ""
@@ -398,8 +401,8 @@ class GenerationHandler(
                                             val service = me.rerere.rikkahub.data.service.ExternalMemoryService(config)
                                             val recalled = mutableListOf<String>()
 
-                                            // 如果配置了向量模型，使用向量召回日记摘要
-                                            if (config.embeddingModelId != null && queryText.isNotBlank()) {
+                            // 如果配置了向量模型且开启了日记摘要，使用向量召回日记摘要
+                            if (config.embeddingModelId != null && queryText.isNotBlank() && config.autoSaveDiarySummary) {
                                                 val embeddingModel = settings.findModelById(config.embeddingModelId)
                                                 if (embeddingModel != null) {
                                                     val embeddingProvider = embeddingModel.findProvider(settings.providers)

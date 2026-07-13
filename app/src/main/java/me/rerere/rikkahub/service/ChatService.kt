@@ -277,7 +277,7 @@ class ChatService(
 
     // ---- Session 管理 ----
 
-    private fun getOrCreateSession(conversationId: Uuid): ConversationSession {
+    internal fun getOrCreateSession(conversationId: Uuid): ConversationSession {
         return sessions.computeIfAbsent(conversationId) { id ->
             val settings = settingsStore.settingsFlow.value
             ConversationSession(
@@ -509,35 +509,46 @@ class ChatService(
     fun addProactiveMessage(conversationId: Uuid, aiMessage: UIMessage) {
         launchWithConversationReference(conversationId) {
             try {
-                val session = getOrCreateSession(conversationId)
-
-                // 等待当前正在进行的生成任务（如果有）先完全结束，再追加这条主动消息。
-                // 原因：主生成流程会按 index 位置往它自己的消息节点写入流式增量内容
-                // (Conversation.updateCurrentMessages 是按位置对齐的，不认节点归属)。
-                // 如果不等待，这里基于当下状态追加的新节点会占据下一个 index 位置，
-                // 导致主生成流程后续到达的 chunk 被错误地合并进这条主动消息节点里，
-                // 表现为消息分支 <2/2> 错乱、内容被覆盖。
-                session.getJob()?.let { job ->
-                    if (job.isActive) {
-                        Log.i(TAG, "addProactiveMessage: waiting for ongoing generation to finish, conversationId=$conversationId")
-                        job.join()
-                    }
-                }
-
-                session.saveMutex.withLock {
-                    // 优先从数据库读取完整对话，避免 session 被 idle 清除后用空对话覆盖数据库已有数据
-                    val currentConversation = conversationRepo.getConversationById(conversationId)
-                        ?: session.state.value
-                    val updated = currentConversation.copy(
-                        messageNodes = currentConversation.messageNodes + aiMessage.toMessageNode(),
-                        updateAt = java.time.Instant.now()
-                    )
-                    updateConversation(conversationId, updated)
-                    saveConversation(conversationId, updated)
-                }
+                appendProactiveAiMessageUnderLock(conversationId, aiMessage)
             } catch (e: Exception) {
                 Log.e(TAG, "addProactiveMessage failed, conversationId=$conversationId", e)
             }
+        }
+    }
+
+    /**
+     * 在 saveMutex 保护下，把 AI 主动生成的消息追加到对话并落库。
+     * 与 sendMessage/regenerate 等共享同一把锁，避免 read-modify-write 竞态导致消息被覆盖。
+     */
+    private suspend fun appendProactiveAiMessageUnderLock(
+        conversationId: Uuid,
+        aiMessage: UIMessage,
+    ) {
+        val session = getOrCreateSession(conversationId)
+
+        // 等待当前正在进行的生成任务（如果有）先完全结束，再追加这条主动消息。
+        // 原因：主生成流程会按 index 位置往它自己的消息节点写入流式增量内容
+        // (Conversation.updateCurrentMessages 是按位置对齐的，不认节点归属)。
+        // 如果不等待，这里基于当下状态追加的新节点会占据下一个 index 位置，
+        // 导致主生成流程后续到达的 chunk 被错误地合并进这条主动消息节点里，
+        // 表现为消息分支 <2/2> 错乱、内容被覆盖。
+        session.getJob()?.let { job ->
+            if (job.isActive) {
+                Log.i(TAG, "appendProactiveAiMessageUnderLock: waiting for ongoing generation to finish, conversationId=$conversationId")
+                job.join()
+            }
+        }
+
+        session.saveMutex.withLock {
+            // 优先从数据库读取完整对话，避免 session 被 idle 清除后用空对话覆盖数据库已有数据
+            val currentConversation = conversationRepo.getConversationById(conversationId)
+                ?: session.state.value
+            val updated = currentConversation.copy(
+                messageNodes = currentConversation.messageNodes + aiMessage.toMessageNode(),
+                updateAt = java.time.Instant.now()
+            )
+            updateConversation(conversationId, updated)
+            saveConversation(conversationId, updated)
         }
     }
 
@@ -868,7 +879,11 @@ addAll(localTools.getTools(assistant.localTools, me.rerere.rikkahub.data.ai.tool
     callerConversationId = conversationId.toString(),
 )))
                     // System tools (location, notifications, calendar, alarm, camera)
-                    val systemToolsOptions = settings.systemToolsSetting.getEnabledOptions()
+                    val systemToolsOptions = settings.systemToolsSetting.getEnabledOptions().toMutableSet()
+                    // 如果存在启用的外置记忆库，始终启用 supabase_query 工具
+                    if (settings.externalMemories.any { it.enabled }) {
+                        systemToolsOptions.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.SupabaseQuery)
+                    }
                     if (systemToolsOptions.isNotEmpty()) {
                         val systemTools = SystemTools(context, settings)
                         addAll(systemTools.getTools(systemToolsOptions, conversation.currentMessages, filesManager))
@@ -1455,7 +1470,7 @@ addAll(localTools.getTools(assistant.localTools, me.rerere.rikkahub.data.ai.tool
 
     // ---- 对话状态更新 ----
 
-    private fun updateConversation(conversationId: Uuid, conversation: Conversation) {
+    internal fun updateConversation(conversationId: Uuid, conversation: Conversation) {
         if (conversation.id != conversationId) return
         val session = getOrCreateSession(conversationId)
         checkFilesDelete(conversation, session.state.value)

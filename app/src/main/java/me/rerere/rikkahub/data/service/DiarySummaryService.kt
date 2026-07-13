@@ -164,86 +164,21 @@ class DiarySummaryService {
 
         /**
          * 重新调度日记总结（App 启动时调用）
+         * 已废弃：日记总结完全由 Supabase Edge Function 负责，App 不再本地调度。
          */
+        @Deprecated("Diary summary is now handled by Supabase Edge Function")
         fun rescheduleIfEnabled(context: Context) {
-            CoroutineScope(Dispatchers.IO).launch {
-                try {
-                    val settingsStore = GlobalContext.get().get<SettingsStore>()
-                    val settings = settingsStore.settingsFlowRaw.first()
-                    val hasDiaryEnabled = settings.externalMemories.any { it.enabled && it.autoSaveDiarySummary }
-
-                    if (hasDiaryEnabled) {
-                        scheduleNext(context, DEFAULT_HOUR)
-                        Log.i(TAG, "Rescheduled diary summary alarm at hour=$DEFAULT_HOUR")
-                    } else {
-                        cancel(context)
-                        Log.i(TAG, "Diary summary disabled, cancelled alarm")
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to reschedule diary summary", e)
-                }
-            }
+            cancel(context)
+            Log.i(TAG, "Local diary summary disabled; handled by Supabase Edge Function")
         }
 
         /**
          * 检查最近几天是否有未写的日记，如果有则补写
-         * 从所有开启了日记摘要的外置记忆库拉取消息
+         * 已废弃：日记总结完全由 Supabase Edge Function 负责，App 不再本地生成。
          */
+        @Deprecated("Diary summary is now handled by Supabase Edge Function")
         fun checkAndGenerateMissingDiaries(context: Context) {
-            CoroutineScope(Dispatchers.IO).launch {
-                try {
-                    val settingsStore = GlobalContext.get().get<SettingsStore>()
-                    val settings = settingsStore.settingsFlowRaw.first()
-                    val diaryConfigs = settings.externalMemories.filter { it.enabled && it.autoSaveDiarySummary }
-
-                    if (diaryConfigs.isEmpty()) {
-                        Log.d(TAG, "Diary summary disabled, skip missing check")
-                        return@launch
-                    }
-
-                    val providerManager = GlobalContext.get().get<ProviderManager>()
-                    val memoryBankService = GlobalContext.get().get<MemoryBankService>()
-
-                    // 检查最近 7 天
-                    val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-                    val calendar = Calendar.getInstance()
-                    calendar.add(Calendar.DAY_OF_YEAR, -1) // 从昨天开始检查
-
-                    for (i in 0 until 7) {
-                        val dateStr = sdf.format(calendar.time)
-
-                        // 从所有外置记忆库拉取当天消息
-                        val dayMessages = getDayMessagesFromSupabase(
-                            dateStr = dateStr,
-                            configs = diaryConfigs
-                        )
-
-                        if (dayMessages.isEmpty()) {
-                            Log.d(TAG, "No messages for $dateStr, skip")
-                            calendar.add(Calendar.DAY_OF_YEAR, -1)
-                            continue
-                        }
-
-                        Log.i(TAG, "Generating missing diary for $dateStr (${dayMessages.size} messages)")
-
-                        // 生成日记总结
-                        generateDiaryForDate(
-                            dateStr = dateStr,
-                            messages = dayMessages,
-                            settingsStore = settingsStore,
-                            providerManager = providerManager,
-                            memoryBankService = memoryBankService,
-                            diaryConfigs = diaryConfigs
-                        )
-
-                        calendar.add(Calendar.DAY_OF_YEAR, -1)
-                    }
-
-                    Log.i(TAG, "Missing diary check completed")
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to check/generate missing diaries", e)
-                }
-            }
+            Log.d(TAG, "Local diary summary generation disabled; handled by Supabase Edge Function")
         }
 
         /**

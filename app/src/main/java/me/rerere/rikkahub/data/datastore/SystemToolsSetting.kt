@@ -94,9 +94,7 @@ data class SystemToolsSetting(
         if (batteryEnabled) options.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.Battery)
         if (musicEnabled) options.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.Music)
         if (smsEnabled) options.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.Sms)
-        if (supabaseEnabled && supabaseUrl.isNotBlank() && supabaseApiKey.isNotBlank()) {
-            options.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.SupabaseQuery)
-        }
+        // SupabaseQuery 现在由外置记忆库配置驱动
         if (torchEnabled) options.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.Torch)
         if (toastEnabled) options.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.Toast)
         if (vibrateEnabled) options.add(me.rerere.rikkahub.data.ai.tools.SystemToolOption.Vibrate)
